@@ -1,0 +1,153 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User profile with their level, XP, badges, active location, and friends list.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "handle": { "type": "string" },
+        "email": { "type": "string" },
+        "level": { "type": "integer" },
+        "reputation": { "type": "integer" },
+        "activeLocation": { "type": "object" },
+        "badges": { "type": "array" },
+        "friends": { "type": "array" },
+        "motto": { "type": "string" },
+        "skateStyle": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "handle", "email", "level", "reputation", "createdAt", "updatedAt"]
+    },
+    "Challenge": {
+      "title": "Challenge",
+      "description": "Rebellious, dynamically generated personal or community skate challenges.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "type": { "type": "string", "enum": ["personal", "community"] },
+        "districtId": { "type": "string" },
+        "targetSpot": { "type": "string" },
+        "difficulty": { "type": "string" },
+        "xpReward": { "type": "integer" },
+        "status": { "type": "string", "enum": ["active", "completed", "expired"] },
+        "creatorId": { "type": "string" },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "description", "type", "districtId", "targetSpot", "difficulty", "xpReward", "status", "creatorId", "createdAt"]
+    },
+    "TrickUpload": {
+      "title": "Trick Upload",
+      "description": "Social feed entry of user-uploaded skate videos or trick accomplishments.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userUid": { "type": "string" },
+        "userName": { "type": "string" },
+        "districtId": { "type": "string" },
+        "spotName": { "type": "string" },
+        "text": { "type": "string" },
+        "likesCount": { "type": "integer" },
+        "likedUsers": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "comments": {
+          "type": "array",
+          "description": "User comments left on the clip",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "userUid": { "type": "string" },
+              "userName": { "type": "string" },
+              "message": { "type": "string" },
+              "createdAt": { "type": "string" }
+            },
+            "required": ["id", "userUid", "userName", "message", "createdAt"]
+          }
+        }
+      },
+      "required": ["id", "userUid", "userName", "districtId", "spotName", "text", "likesCount", "likedUsers", "createdAt"]
+    },
+    "District": {
+      "title": "District",
+      "description": "A skateboard urban sector district.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "code": { "type": "string" },
+        "timezone": { "type": "string" },
+        "coordinates": { "type": "string" },
+        "mission": { "type": "string" },
+        "missionSteps": { "type": "array" },
+        "missionTotal": { "type": "integer" },
+        "skatersLive": { "type": "integer" },
+        "noiseLevel": { "type": "string" },
+        "spots": { "type": "array" },
+        "riders": { "type": "array" }
+      },
+      "required": ["id", "name", "code", "timezone", "coordinates", "mission", "missionSteps", "missionTotal", "skatersLive", "noiseLevel", "spots", "riders"]
+    },
+    "ChatMessage": {
+      "title": "Chat Message",
+      "description": "Secure skater to skater direct com-link messages.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "senderUid": { "type": "string" },
+        "senderHandle": { "type": "string" },
+        "receiverUid": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "senderUid", "senderHandle", "receiverUid", "text", "createdAt"]
+    },
+    "CustomSpot": {
+      "title": "Custom Spot",
+      "description": "Custom street spot registered by a user.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "districtId": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "difficulty": { "type": "string", "enum": ["Core", "Concrete", "Ledge", "Vandal", "Steel"] },
+        "hype": { "type": "integer" },
+        "coords": { "type": "object" },
+        "createdBy": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "districtId", "name", "description", "difficulty", "hype", "coords", "createdBy"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "Information about registered skaters."
+    },
+    "challenges/{challengeId}": {
+      "schema": "Challenge",
+      "description": "Generated active skate outlaw missions."
+    },
+    "trick_uploads/{uploadId}": {
+      "schema": "TrickUpload",
+      "description": "Underground skate streams and clip uploads."
+    },
+    "districts/{districtId}": {
+      "schema": "District",
+      "description": "Dynamically added skater district sectors."
+    },
+    "direct_messages/{messageId}": {
+      "schema": "ChatMessage",
+      "description": "Direct message history between skater connections."
+    },
+    "custom_spots/{spotId}": {
+      "schema": "CustomSpot",
+      "description": "Custom street spots registered by users."
+    }
+  }
+}

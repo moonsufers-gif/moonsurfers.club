@@ -1,0 +1,114 @@
+@import "tailwindcss";
+
+@theme {
+  --font-syne: "Syne", sans-serif;
+  --font-grotesk: "Space Grotesk", sans-serif;
+  --font-outfit: "Outfit", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+  
+  --animate-scanline: scanline 6s linear infinite;
+  --animate-ticker: ticker 30s linear infinite;
+  --animate-radar-sweep: radarSweep 6s linear infinite;
+}
+
+@keyframes radarSweep {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes scanline {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100%);
+  }
+}
+
+/* Custom Text Stroke for Editorial Look */
+.outline-text {
+  -webkit-text-stroke: 1.5px currentColor;
+  color: transparent;
+}
+
+/* Scrollbar styling for modern minimal theme */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.02);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.4);
+}
+
+/* Lo-fi Zine Aesthetic Flicker Effect on Hover */
+@keyframes zine-flicker {
+  0% {
+    opacity: 0.98;
+    transform: translate(0, 0);
+    filter: brightness(1) contrast(1);
+  }
+  15% {
+    opacity: 0.92;
+    transform: translate(-0.5px, 0.5px) skewX(0.1deg);
+    filter: brightness(1.08) contrast(1.05);
+  }
+  30% {
+    opacity: 1;
+    transform: translate(0, 0);
+    filter: brightness(1) contrast(1);
+  }
+  45% {
+    opacity: 0.94;
+    transform: translate(0.5px, -0.5px);
+    filter: brightness(0.97);
+  }
+  60% {
+    opacity: 0.98;
+    transform: translate(0, 0);
+  }
+  75% {
+    opacity: 0.91;
+    transform: translate(-0.5px, -0.5px) skewX(-0.1deg);
+    filter: brightness(1.1) contrast(1.08);
+  }
+  90% {
+    opacity: 0.99;
+    transform: translate(0.5px, 0.5px);
+    filter: brightness(0.98) contrast(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(0, 0);
+    filter: brightness(1) contrast(1);
+  }
+}
+
+.zine-card-flicker {
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.zine-card-flicker:hover {
+  animation: zine-flicker 0.25s infinite;
+  border-color: rgba(255, 255, 255, 0.35) !important;
+  background-color: rgba(255, 255, 255, 0.05) !important;
+  box-shadow: 0 0 10px rgba(255, 255, 255, 0.05);
+}
+
+/* Ensure shared highlight target maintains specific border hover colors while flickering */
+.zine-card-flicker.border-yellow-500:hover {
+  border-color: #eab308 !important;
+  background-color: rgba(234, 179, 8, 0.15) !important;
+  box-shadow: 0 0 16px rgba(234, 179, 8, 0.3) !important;
+}
+

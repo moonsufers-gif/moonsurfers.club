@@ -1,0 +1,6 @@
+{
+  "name": "Moonsurfers",
+  "description": "A zine-style global night-skate movement dashboard and interactive feed featuring live maps, trick uploads, daily missions, and leaderboards.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
