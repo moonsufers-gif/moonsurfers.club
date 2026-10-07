@@ -140,6 +140,7 @@ import {
   serverTimestamp,
   or
 } from 'firebase/firestore';
+import { Analytics } from '@vercel/analytics/react';
 
 import { APIProvider, Map as GoogleMap, AdvancedMarker, Pin, Circle } from '@vis.gl/react-google-maps';
 import { motion, AnimatePresence } from 'motion/react';
@@ -14461,6 +14462,7 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+      <Analytics />
 
     </div>
   );
