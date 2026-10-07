@@ -11,9 +11,41 @@ import {
   Clock, 
   Flame,
   Check,
-  ChevronRight
+  ChevronRight,
+  PlusCircle,
+  Trash2,
+  Edit3,
+  AlertTriangle,
+  Radio,
+  Calendar
 } from 'lucide-react';
 import { DynamicChallenge } from '../lib/firebase';
+
+export interface OutlawIntelItem {
+  id: string;
+  title: string;
+  sector: string;
+  severity: 'CRITICAL' | 'ALERT' | 'INFO' | 'CLEAR' | 'ESCAPE_GOAL';
+  timestamp: string;
+  author: string;
+  isEscapeGoal?: boolean;
+  description?: string;
+  xpReward?: number;
+  rewardType?: 'XP' | 'Title Badge' | 'Gear Item' | 'Reputation Boost';
+  customReward?: string;
+  difficulty?: 'Core' | 'Concrete' | 'Ledge' | 'Vandal' | 'Steel' | 'Insane';
+  completedByUsers?: string[];
+}
+
+export interface OutlawEventItem {
+  id: string;
+  title: string;
+  location: string;
+  eventDate: string; // ISO string
+  xpReward: number;
+  details: string;
+  createdBy: string;
+}
 
 interface CuratedChallenge {
   id: string;
@@ -41,7 +73,77 @@ interface UndergroundChallengesProps {
   currentUser: { uid: string; isGuest?: boolean } | null;
   profile: { reputation: number; level: number; id: string } | null;
   onAwardXp: (xpAmount: number, challengeTitle: string) => Promise<void>;
+  isAdmin?: boolean;
+  intelList?: OutlawIntelItem[];
+  onAddIntel?: (intel: {
+    id?: string;
+    title: string;
+    sector: string;
+    severity: 'CRITICAL' | 'ALERT' | 'INFO' | 'CLEAR' | 'ESCAPE_GOAL';
+    isEscapeGoal?: boolean;
+    description?: string;
+    xpReward?: number;
+    rewardType?: 'XP' | 'Title Badge' | 'Gear Item' | 'Reputation Boost';
+    customReward?: string;
+    difficulty?: 'Core' | 'Concrete' | 'Ledge' | 'Vandal' | 'Steel' | 'Insane';
+  }) => Promise<void>;
+  onDeleteIntel?: (intelId: string) => Promise<void>;
+  onClaimIntelEscapeGoal?: (intel: OutlawIntelItem) => Promise<void>;
+  eventsList?: OutlawEventItem[];
+  onSaveEvent?: (event: OutlawEventItem) => Promise<void>;
+  onDeleteEvent?: (eventId: string) => Promise<void>;
 }
+
+// Minimal Live Clock Countdown Component
+const MinimalEventCountdown: React.FC<{ targetDate: string }> = ({ targetDate }) => {
+  const [timeLeft, setTimeLeft] = useState<{ days: number; hours: number; minutes: number; seconds: number; isExpired: boolean }>({
+    days: 0, hours: 0, minutes: 0, seconds: 0, isExpired: false
+  });
+
+  useEffect(() => {
+    const calculate = () => {
+      const now = new Date().getTime();
+      const target = new Date(targetDate).getTime();
+      const diff = target - now;
+
+      if (isNaN(target) || diff <= 0) {
+        setTimeLeft({ days: 0, hours: 0, minutes: 0, seconds: 0, isExpired: true });
+        return;
+      }
+
+      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+      const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+
+      setTimeLeft({ days, hours, minutes, seconds, isExpired: false });
+    };
+
+    calculate();
+    const interval = setInterval(calculate, 1000);
+    return () => clearInterval(interval);
+  }, [targetDate]);
+
+  if (timeLeft.isExpired) {
+    return (
+      <span className="text-[8.5px] bg-zinc-900 text-zinc-500 border border-zinc-800 px-2 py-0.5 font-bold uppercase font-mono tracking-wider shrink-0">
+        [ EVENT PASSED / EXPIRED ]
+      </span>
+    );
+  }
+
+  const dStr = String(timeLeft.days).padStart(2, '0');
+  const hStr = String(timeLeft.hours).padStart(2, '0');
+  const mStr = String(timeLeft.minutes).padStart(2, '0');
+  const sStr = String(timeLeft.seconds).padStart(2, '0');
+
+  return (
+    <div className="flex items-center gap-1.5 text-[9px] font-mono text-red-400 font-black bg-red-950/40 border border-red-500/30 px-2 py-0.5 rounded-xs animate-pulse shrink-0">
+      <Clock className="w-2.5 h-2.5 shrink-0 text-red-500" />
+      <span>COUNTDOWN: {dStr}d {hStr}h {mStr}m {sStr}s</span>
+    </div>
+  );
+};
 
 // Master pool of general/weekly underground objectives
 const MASTER_CURATED_WEEKLY_CHALLENGES: CuratedChallenge[] = [
@@ -199,9 +301,17 @@ export function UndergroundChallenges({
   sounds,
   currentUser,
   profile,
-  onAwardXp
+  onAwardXp,
+  isAdmin = false,
+  intelList = [],
+  onAddIntel,
+  onDeleteIntel,
+  onClaimIntelEscapeGoal,
+  eventsList = [],
+  onSaveEvent,
+  onDeleteEvent
 }: UndergroundChallengesProps) {
-  const [activeTab, setActiveTab] = useState<'personal' | 'weekly'>('personal');
+  const [activeTab, setActiveTab] = useState<'personal' | 'weekly' | 'intel' | 'events'>('personal');
   const [activeCuratedList, setActiveCuratedList] = useState<CuratedChallenge[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterDifficulty, setFilterDifficulty] = useState<string>('ALL');
@@ -210,10 +320,33 @@ export function UndergroundChallenges({
   const [shuffling, setShuffling] = useState(false);
   const [selectedCurated, setSelectedCurated] = useState<CuratedChallenge | null>(null);
 
+  // Intel input form states for Admin
+  const [showAddIntelForm, setShowAddIntelForm] = useState(false);
+  const [editingIntelId, setEditingIntelId] = useState<string | null>(null);
+  const [dispatchType, setDispatchType] = useState<'ESCAPE_GOAL' | 'INTEL'>('ESCAPE_GOAL');
+  const [intelHeadline, setIntelHeadline] = useState('');
+  const [intelSector, setIntelSector] = useState('Accra [ACC]');
+  const [intelSeverity, setIntelSeverity] = useState<'CRITICAL' | 'ALERT' | 'INFO' | 'CLEAR'>('ALERT');
+  const [goalDescription, setGoalDescription] = useState('');
+  const [goalXpReward, setGoalXpReward] = useState(500);
+  const [goalRewardType, setGoalRewardType] = useState<'XP' | 'Title Badge' | 'Gear Item' | 'Reputation Boost'>('XP');
+  const [goalCustomReward, setGoalCustomReward] = useState('');
+  const [goalDifficulty, setGoalDifficulty] = useState<'Core' | 'Concrete' | 'Ledge' | 'Vandal' | 'Steel' | 'Insane'>('Steel');
+  const [isSubmittingIntel, setIsSubmittingIntel] = useState(false);
+
+  // Event creation form states for Admin
+  const [showEventForm, setShowEventForm] = useState(false);
+  const [editingEventId, setEditingEventId] = useState<string | null>(null);
+  const [eventTitle, setEventTitle] = useState('');
+  const [eventLocation, setEventLocation] = useState('');
+  const [eventDateStr, setEventDateStr] = useState('');
+  const [eventXp, setEventXp] = useState(500);
+  const [eventDetails, setEventDetails] = useState('');
+  const [isSubmittingEvent, setIsSubmittingEvent] = useState(false);
+
   // Initialize weekly challenges by shuffling a set of 4 challenges on mounts
   useEffect(() => {
     shuffleCuratedPool();
-    // Load completed weekly challenge IDs from localStorage based on user
     if (currentUser) {
       const key = `moonsurfers_weeklies_v1_${currentUser.uid}`;
       const saved = localStorage.getItem(key);
@@ -228,7 +361,6 @@ export function UndergroundChallenges({
   const shuffleCuratedPool = () => {
     sounds.playSelect();
     setShuffling(true);
-    // Shuffle and pick 4 unique challenges
     setTimeout(() => {
       const shuffled = [...MASTER_CURATED_WEEKLY_CHALLENGES].sort(() => 0.5 - Math.random());
       const selected = shuffled.slice(0, 4);
@@ -241,16 +373,114 @@ export function UndergroundChallenges({
   const handleCompleteWeekly = async (ch: CuratedChallenge) => {
     if (!currentUser || !profile) return;
     sounds.playTrickSuccess();
-    
-    // Complete and add to state
     const newCompleted = [...completedWeeklyIds, ch.id];
     setCompletedWeeklyIds(newCompleted);
-
     const key = `moonsurfers_weeklies_v1_${currentUser.uid}`;
     localStorage.setItem(key, JSON.stringify(newCompleted));
-
-    // Award XP via applet's callback
     await onAwardXp(ch.xpReward, ch.title);
+  };
+
+  const startEditIntel = (item: OutlawIntelItem) => {
+    sounds.playSelect();
+    setEditingIntelId(item.id);
+    const isGoal = item.isEscapeGoal || item.severity === 'ESCAPE_GOAL';
+    setDispatchType(isGoal ? 'ESCAPE_GOAL' : 'INTEL');
+    setIntelHeadline(item.title);
+    setIntelSector(item.sector);
+    setIntelSeverity(item.severity !== 'ESCAPE_GOAL' ? item.severity : 'ALERT');
+    setGoalDescription(item.description || '');
+    setGoalXpReward(item.xpReward || 500);
+    setGoalRewardType(item.rewardType || 'XP');
+    setGoalCustomReward(item.customReward || '');
+    setGoalDifficulty(item.difficulty || 'Steel');
+    setShowAddIntelForm(true);
+  };
+
+  const resetIntelForm = () => {
+    setEditingIntelId(null);
+    setIntelHeadline('');
+    setGoalDescription('');
+    setGoalCustomReward('');
+    setShowAddIntelForm(false);
+  };
+
+  const handlePostIntelSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!intelHeadline.trim()) return;
+    setIsSubmittingIntel(true);
+    try {
+      if (onAddIntel) {
+        if (dispatchType === 'ESCAPE_GOAL') {
+          await onAddIntel({
+            id: editingIntelId || undefined,
+            title: intelHeadline.trim(),
+            sector: intelSector.trim() || 'Sector-7',
+            severity: 'ESCAPE_GOAL',
+            isEscapeGoal: true,
+            description: goalDescription.trim() || 'Execute undercover maneuvers and bypass sector security alarms.',
+            xpReward: Number(goalXpReward) || 500,
+            rewardType: goalRewardType,
+            customReward: goalCustomReward.trim(),
+            difficulty: goalDifficulty
+          });
+        } else {
+          await onAddIntel({
+            id: editingIntelId || undefined,
+            title: intelHeadline.trim(),
+            sector: intelSector.trim() || 'Global',
+            severity: intelSeverity
+          });
+        }
+      }
+      resetIntelForm();
+    } finally {
+      setIsSubmittingIntel(false);
+    }
+  };
+
+  const handleEventFormSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!eventTitle.trim() || !eventLocation.trim() || !eventDateStr) return;
+    setIsSubmittingEvent(true);
+    try {
+      if (onSaveEvent) {
+        const isoDate = new Date(eventDateStr).toISOString();
+        await onSaveEvent({
+          id: editingEventId || `event_${Date.now()}`,
+          title: eventTitle.trim(),
+          location: eventLocation.trim(),
+          eventDate: isoDate,
+          xpReward: Number(eventXp) || 300,
+          details: eventDetails.trim(),
+          createdBy: (profile as any)?.handle || 'ADMIN'
+        });
+      }
+      setEditingEventId(null);
+      setEventTitle('');
+      setEventLocation('');
+      setEventDateStr('');
+      setEventDetails('');
+      setShowEventForm(false);
+    } finally {
+      setIsSubmittingEvent(false);
+    }
+  };
+
+  const openEditEvent = (ev: OutlawEventItem) => {
+    setEditingEventId(ev.id);
+    setEventTitle(ev.title);
+    setEventLocation(ev.location);
+    // Format date string for datetime-local input
+    try {
+      const d = new Date(ev.eventDate);
+      const localIso = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+      setEventDateStr(localIso);
+    } catch (_) {
+      setEventDateStr('');
+    }
+    setEventXp(ev.xpReward);
+    setEventDetails(ev.details);
+    setShowEventForm(true);
   };
 
   const filteredCurated = useMemo(() => {
@@ -280,25 +510,37 @@ export function UndergroundChallenges({
   return (
     <div className="border border-white/10 bg-zinc-950/40 divide-y divide-white/10 select-none font-mono">
       {/* HEADER SECTION */}
-      <div className="p-4 bg-black/60 flex items-center justify-between">
+      <div className="p-4 bg-black/60 flex flex-col md:flex-row md:items-center justify-between gap-2">
         <div className="flex flex-col space-y-0.5">
-          <span className="text-[9px] text-red-600 font-bold tracking-widest uppercase animate-pulse">CHALLENGE MOTORWAY v2.8</span>
+          <span className="text-[9px] text-red-600 font-bold tracking-widest uppercase animate-pulse">OUTLAW MOTORWAY & EVENT CORE</span>
           <h3 className="text-base font-black italic uppercase font-syne tracking-tight text-white">OUTLAW INTEL BOX</h3>
         </div>
 
         {/* TABS CONTROLLER */}
-        <div className="flex bg-zinc-950 border border-white/15 p-1 rounded-sm gap-1">
+        <div className="flex bg-zinc-950 border border-white/15 p-1 rounded-sm gap-1 overflow-x-auto">
           <button
             onClick={() => { sounds.playTick(); setActiveTab('personal'); }}
-            className={`text-[9px] font-black uppercase px-2.5 py-1 tracking-wider transition-all rounded-xs cursor-pointer ${activeTab === 'personal' ? 'bg-white text-black' : 'text-zinc-500 hover:text-white'}`}
+            className={`text-[8.5px] font-black uppercase px-2 py-1 tracking-wider transition-all rounded-xs cursor-pointer shrink-0 ${activeTab === 'personal' ? 'bg-white text-black' : 'text-zinc-500 hover:text-white'}`}
           >
             Personal
           </button>
           <button
             onClick={() => { sounds.playTick(); setActiveTab('weekly'); }}
-            className={`text-[9px] font-black uppercase px-2.5 py-1 tracking-wider transition-all rounded-xs cursor-pointer ${activeTab === 'weekly' ? 'bg-white text-black' : 'text-zinc-500 hover:text-white'}`}
+            className={`text-[8.5px] font-black uppercase px-2 py-1 tracking-wider transition-all rounded-xs cursor-pointer shrink-0 ${activeTab === 'weekly' ? 'bg-white text-black' : 'text-zinc-500 hover:text-white'}`}
           >
-            Weekly Goals
+            Weeklies
+          </button>
+          <button
+            onClick={() => { sounds.playTick(); setActiveTab('intel'); }}
+            className={`text-[8.5px] font-black uppercase px-2 py-1 tracking-wider transition-all rounded-xs cursor-pointer shrink-0 ${activeTab === 'intel' ? 'bg-red-600 text-white font-extrabold' : 'text-zinc-500 hover:text-white'}`}
+          >
+            Intel Box
+          </button>
+          <button
+            onClick={() => { sounds.playTick(); setActiveTab('events'); }}
+            className={`text-[8.5px] font-black uppercase px-2 py-1 tracking-wider transition-all rounded-xs cursor-pointer shrink-0 ${activeTab === 'events' ? 'bg-red-600 text-white font-extrabold' : 'text-zinc-500 hover:text-white'}`}
+          >
+            Events
           </button>
         </div>
       </div>
@@ -451,7 +693,7 @@ export function UndergroundChallenges({
           {selectedCurated && (
             <div className="border border-red-500/30 bg-red-950/15 p-4 space-y-3 relative overflow-hidden">
               {/* Scanline backdrop effect */}
-              <div className="absolute inset-0 bg-linear-gradient(to bottom, rgba(239, 68, 68, 0.05) 1px, transparent 1px) bg-[size:100%_8px] pointer-events-none opacity-40"></div>
+              <div className="absolute inset-0 bg-linear-gradient(to bottom, rgba(255, 0, 43, 0.08) 1px, transparent 1px) bg-[size:100%_8px] pointer-events-none opacity-40"></div>
               
               <div className="flex justify-between items-start gap-1">
                 <div className="space-y-0.5">
@@ -555,6 +797,589 @@ export function UndergroundChallenges({
                 </div>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB CONTENT: OUTLAW INTEL BOX */}
+      {activeTab === 'intel' && (
+        <div className="p-4 space-y-4">
+          <div className="flex items-center justify-between border-b border-white/10 pb-2">
+            <div>
+              <h4 className="text-xs font-black uppercase text-white font-syne tracking-wide flex items-center gap-1.5">
+                <Radio className="w-3.5 h-3.5 text-red-500 animate-pulse" />
+                Outlaw Intel Box
+              </h4>
+              <p className="text-[9px] text-zinc-400 font-sans mt-0.5">Real-time network security warnings & sector intelligence dispatches.</p>
+            </div>
+            {isAdmin && (
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    sounds.playSelect();
+                    setEditingIntelId(null);
+                    setDispatchType('ESCAPE_GOAL');
+                    setShowAddIntelForm(true);
+                  }}
+                  className="bg-amber-500 hover:bg-amber-400 text-black text-[9px] font-black uppercase px-2.5 py-1 flex items-center gap-1 transition-all shrink-0 cursor-pointer shadow-sm"
+                >
+                  <Zap className="w-3 h-3 fill-black" />
+                  + New Escape Goal
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    sounds.playSelect();
+                    setEditingIntelId(null);
+                    setDispatchType('INTEL');
+                    setShowAddIntelForm(true);
+                  }}
+                  className="bg-red-600 hover:bg-red-500 text-white text-[9px] font-black uppercase px-2 py-1 flex items-center gap-1 transition-all shrink-0 cursor-pointer"
+                >
+                  <PlusCircle className="w-3 h-3" />
+                  + Alert
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Admin Add Intel / Escape Goal Form */}
+          {isAdmin && showAddIntelForm && (
+            <form onSubmit={handlePostIntelSubmit} className="bg-zinc-900/90 border border-amber-500/50 p-3.5 space-y-3 rounded-xs shadow-xl relative">
+              <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                <div className="text-[9.5px] font-black uppercase text-amber-400 tracking-wider flex items-center gap-1.5 font-grotesk">
+                  <Zap className="w-3.5 h-3.5 text-amber-400" />
+                  {editingIntelId ? "EDITING DISPATCH / GOAL" : "AUTHORIZE NEW NETWORK DISPATCH"}
+                </div>
+                {/* Mode Selector */}
+                <div className="flex items-center gap-1.5">
+                  <div className="flex bg-black border border-white/15 p-0.5 rounded-xs gap-1">
+                    <button
+                      type="button"
+                      onClick={() => { sounds.playTick(); setDispatchType('ESCAPE_GOAL'); }}
+                      className={`text-[8px] font-black uppercase px-2 py-0.5 tracking-wider transition-all cursor-pointer ${
+                        dispatchType === 'ESCAPE_GOAL' ? 'bg-amber-500 text-black font-extrabold' : 'text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      Escape Goal
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { sounds.playTick(); setDispatchType('INTEL'); }}
+                      className={`text-[8px] font-black uppercase px-2 py-0.5 tracking-wider transition-all cursor-pointer ${
+                        dispatchType === 'INTEL' ? 'bg-red-600 text-white font-extrabold' : 'text-zinc-400 hover:text-white'
+                      }`}
+                    >
+                      Patrol Alert
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={resetIntelForm}
+                    className="text-zinc-500 hover:text-white text-[9px] font-mono px-1 cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              {dispatchType === 'ESCAPE_GOAL' ? (
+                <div className="space-y-2.5">
+                  <div className="space-y-1">
+                    <label className="text-[8.5px] font-bold text-amber-400 uppercase tracking-wider block">ESCAPE GOAL TITLE</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. MIDNIGHT COASTAL RADAR EVASION"
+                      value={intelHeadline}
+                      onChange={(e) => setIntelHeadline(e.target.value)}
+                      required
+                      className="w-full bg-black border border-amber-500/30 text-white text-[10px] p-2 outline-none focus:border-amber-400 font-mono"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-[9px]">
+                    <div>
+                      <label className="text-zinc-400 block mb-1">TARGET SECTOR / DISTRICT</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Accra [ACC]"
+                        value={intelSector}
+                        onChange={(e) => setIntelSector(e.target.value)}
+                        className="w-full bg-black border border-white/20 text-white text-[10px] p-1.5 outline-none font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-zinc-400 block mb-1">DIFFICULTY LEVEL</label>
+                      <select
+                        value={goalDifficulty}
+                        onChange={(e: any) => setGoalDifficulty(e.target.value)}
+                        className="w-full bg-black border border-white/20 text-white text-[10px] p-1.5 outline-none font-mono"
+                      >
+                        <option value="Core">Core (Easy)</option>
+                        <option value="Concrete">Concrete (Medium)</option>
+                        <option value="Ledge">Ledge (Hard)</option>
+                        <option value="Vandal">Vandal (Extreme)</option>
+                        <option value="Steel">Steel (Outlaw)</option>
+                        <option value="Insane">Insane (Legendary)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[8.5px] text-zinc-400 block">OBJECTIVE DESCRIPTION / TACTICS</label>
+                    <textarea
+                      placeholder="Specify required tricks, evasion routes, or spot maneuvers..."
+                      value={goalDescription}
+                      onChange={(e) => setGoalDescription(e.target.value)}
+                      rows={2}
+                      className="w-full bg-black border border-white/20 text-white text-[10px] p-2 outline-none focus:border-amber-400 font-mono resize-none"
+                    />
+                  </div>
+
+                  {/* REWARD CONFIGURATION ENGINE */}
+                  <div className="border border-amber-500/30 bg-amber-950/20 p-2.5 rounded-xs space-y-2">
+                    <div className="text-[8.5px] font-black uppercase text-amber-300 tracking-wider flex items-center gap-1">
+                      <Award className="w-3 h-3 text-amber-400" />
+                      CUSTOM REWARD CONFIGURATION
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 text-[9px]">
+                      <div>
+                        <label className="text-zinc-400 block mb-1">XP ALLOCATION</label>
+                        <input
+                          type="number"
+                          value={goalXpReward}
+                          onChange={(e) => setGoalXpReward(Number(e.target.value))}
+                          step={50}
+                          min={50}
+                          max={5000}
+                          className="w-full bg-black border border-amber-500/30 text-amber-400 text-[10px] p-1.5 outline-none font-mono font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-zinc-400 block mb-1">REWARD CATEGORY</label>
+                        <select
+                          value={goalRewardType}
+                          onChange={(e: any) => setGoalRewardType(e.target.value)}
+                          className="w-full bg-black border border-white/20 text-white text-[10px] p-1.5 outline-none font-mono"
+                        >
+                          <option value="XP">XP & Rep Boost</option>
+                          <option value="Title Badge">Outlaw Title Badge</option>
+                          <option value="Gear Item">Deck / Gear Item</option>
+                          <option value="Reputation Boost">Multiplier Chip</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-zinc-400 block mb-1 text-[8.5px]">CUSTOM UNLOCK DESCRIPTION / PERK NAME (OPTIONAL)</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Ghost Stealth Deck + 'Night Crawler' Badge"
+                        value={goalCustomReward}
+                        onChange={(e) => setGoalCustomReward(e.target.value)}
+                        className="w-full bg-black border border-white/20 text-amber-300 text-[10px] p-1.5 outline-none font-mono"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  <input
+                    type="text"
+                    placeholder="Enter Intel Headline / Patrol Alert..."
+                    value={intelHeadline}
+                    onChange={(e) => setIntelHeadline(e.target.value)}
+                    required
+                    className="w-full bg-black border border-white/20 text-white text-[10px] p-2 outline-none focus:border-red-500 font-mono"
+                  />
+                  <div className="grid grid-cols-2 gap-2 text-[9px]">
+                    <div>
+                      <label className="text-zinc-400 block mb-1">SECTOR / DISTRICT</label>
+                      <input
+                        type="text"
+                        value={intelSector}
+                        onChange={(e) => setIntelSector(e.target.value)}
+                        className="w-full bg-black border border-white/20 text-white text-[10px] p-1.5 outline-none font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-zinc-400 block mb-1">ALERT SEVERITY</label>
+                      <select
+                        value={intelSeverity}
+                        onChange={(e: any) => setIntelSeverity(e.target.value)}
+                        className="w-full bg-black border border-white/20 text-white text-[10px] p-1.5 outline-none font-mono"
+                      >
+                        <option value="CRITICAL">CRITICAL</option>
+                        <option value="ALERT">ALERT</option>
+                        <option value="INFO">INFO</option>
+                        <option value="CLEAR">CLEAR</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={isSubmittingIntel}
+                className={`w-full font-black text-[10px] uppercase py-2 cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
+                  dispatchType === 'ESCAPE_GOAL' ? 'bg-amber-500 hover:bg-amber-400 text-black' : 'bg-red-600 hover:bg-red-500 text-white'
+                }`}
+              >
+                {isSubmittingIntel ? (
+                  "BROADCASTING TO NETWORK..."
+                ) : (
+                  <>
+                    <Zap className="w-3.5 h-3.5" />
+                    {dispatchType === 'ESCAPE_GOAL' ? "PUBLISH CUSTOM ESCAPE GOAL" : "DISPATCH INTEL ALERT"}
+                  </>
+                )}
+              </button>
+            </form>
+          )}
+
+          {/* Intel & Escape Goals List */}
+          <div className="space-y-2.5 max-h-[340px] overflow-y-auto pr-1">
+            {intelList && intelList.length > 0 ? (
+              intelList.map((item) => {
+                const isEscapeGoal = item.isEscapeGoal || item.severity === 'ESCAPE_GOAL';
+                const hasClaimed = currentUser && item.completedByUsers?.includes(currentUser.uid);
+
+                if (isEscapeGoal) {
+                  return (
+                    <div key={item.id} className="border border-amber-500/30 bg-gradient-to-br from-amber-950/20 via-black to-zinc-950 p-3 space-y-2 rounded-xs hover:border-amber-500/50 transition-all shadow-md">
+                      <div className="flex items-center justify-between gap-2 border-b border-amber-500/20 pb-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[8px] font-extrabold px-1.5 py-0.5 bg-amber-500 text-black uppercase tracking-wider flex items-center gap-1">
+                            <Zap className="w-2.5 h-2.5 fill-black" />
+                            ESCAPE GOAL
+                          </span>
+                          <span className="text-[8.5px] text-amber-300/80 font-bold uppercase tracking-wider">{item.sector}</span>
+                          {item.difficulty && (
+                            <span className="text-[7.5px] border border-white/20 px-1 py-0.5 text-zinc-300 font-mono">
+                              {item.difficulty}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[8px] text-zinc-500 font-mono">{item.timestamp}</span>
+                          {isAdmin && (
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => startEditIntel(item)}
+                                className="text-zinc-400 hover:text-amber-400 p-0.5 cursor-pointer"
+                                title="Edit Goal Entry"
+                              >
+                                <Edit3 className="w-3 h-3" />
+                              </button>
+                              {onDeleteIntel && (
+                                <button
+                                  type="button"
+                                  onClick={() => onDeleteIntel(item.id)}
+                                  className="text-zinc-500 hover:text-red-400 p-0.5 cursor-pointer"
+                                  title="Delete Goal Entry"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <h4 className="text-xs font-black text-white uppercase tracking-wide leading-tight flex items-center gap-1.5">
+                          {item.title}
+                        </h4>
+                        {item.description && (
+                          <p className="text-[9px] text-zinc-300 font-sans leading-relaxed">
+                            {item.description}
+                          </p>
+                        )}
+                      </div>
+
+                      {/* REWARDS BREAKDOWN BADGES */}
+                      <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-white/5">
+                        <span className="text-[8.5px] font-black bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-xs flex items-center gap-1">
+                          <Zap className="w-2.5 h-2.5 text-amber-400" />
+                          +{item.xpReward || 500} XP
+                        </span>
+                        {item.rewardType && (
+                          <span className="text-[8px] bg-zinc-800 text-zinc-300 border border-zinc-700 px-1.5 py-0.5 rounded-xs font-mono uppercase">
+                            TYPE: {item.rewardType}
+                          </span>
+                        )}
+                        {item.customReward && (
+                          <span className="text-[8px] bg-red-950/60 text-red-300 border border-red-500/30 px-2 py-0.5 rounded-xs font-mono font-bold uppercase flex items-center gap-1">
+                            <Award className="w-2.5 h-2.5 text-red-400" />
+                            REWARD: {item.customReward}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* CLAIM GOAL ACTION */}
+                      <div className="pt-1">
+                        {hasClaimed ? (
+                          <div className="w-full bg-emerald-950/40 border border-emerald-500/30 text-emerald-400 text-[9px] font-bold uppercase py-1.5 px-3 flex items-center justify-center gap-1">
+                            <CheckCircle className="w-3 h-3 text-emerald-400" />
+                            ESCAPE GOAL CLAIMED (+{item.xpReward || 500} XP)
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (onClaimIntelEscapeGoal) {
+                                onClaimIntelEscapeGoal(item);
+                              } else {
+                                sounds.playTrickSuccess();
+                                onAwardXp(item.xpReward || 500, item.title);
+                              }
+                            }}
+                            className="w-full bg-amber-500 hover:bg-amber-400 text-black font-black text-[9.5px] uppercase py-1.5 px-3 transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
+                          >
+                            <Zap className="w-3 h-3 fill-black" />
+                            ACCEPT & CLAIM ESCAPE REWARD (+{item.xpReward || 500} XP)
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
+
+                const badgeColor = 
+                  item.severity === 'CRITICAL' ? 'bg-red-600 text-white' :
+                  item.severity === 'ALERT' ? 'bg-amber-600 text-white' :
+                  item.severity === 'CLEAR' ? 'bg-emerald-600 text-white' : 'bg-zinc-700 text-zinc-200';
+
+                return (
+                  <div key={item.id} className="border border-white/10 bg-black/50 p-2.5 space-y-1.5 hover:border-white/20 transition-all">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5">
+                        <span className={`text-[8px] font-bold px-1.5 py-0.5 rounded-xs uppercase ${badgeColor}`}>
+                          {item.severity}
+                        </span>
+                        <span className="text-[8.5px] text-zinc-400 font-bold uppercase">{item.sector}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[8px] text-zinc-500 font-mono">{item.timestamp}</span>
+                        {isAdmin && onDeleteIntel && (
+                          <button
+                            type="button"
+                            onClick={() => onDeleteIntel(item.id)}
+                            className="text-zinc-500 hover:text-red-400 p-0.5 cursor-pointer"
+                            title="Delete Intel Entry"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-[10px] font-bold text-white uppercase tracking-wide leading-snug">
+                      {item.title}
+                    </div>
+                    <div className="text-[8px] text-zinc-500 font-mono">
+                      Dispatched by @{item.author || 'ADMIN'}
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="text-[9px] font-mono text-zinc-500 italic text-center py-8 border border-dashed border-white/10 bg-black/20">
+                Outlaw intel box quiet. No critical security dispatches logged.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB CONTENT: CUSTOM EVENTS WITH MINIMAL COUNTDOWN */}
+      {activeTab === 'events' && (
+        <div className="p-4 space-y-4">
+          <div className="flex items-center justify-between border-b border-white/10 pb-2">
+            <div>
+              <h4 className="text-xs font-black uppercase text-white font-syne tracking-wide flex items-center gap-1.5">
+                <Calendar className="w-3.5 h-3.5 text-red-500" />
+                Organized Outlaw Events
+              </h4>
+              <p className="text-[9px] text-zinc-400 font-sans mt-0.5">Official night skate rallies, jam sessions & spot takeovers.</p>
+            </div>
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => {
+                  sounds.playSelect();
+                  setEditingEventId(null);
+                  setEventTitle('');
+                  setEventLocation('');
+                  setEventDateStr('');
+                  setEventDetails('');
+                  setShowEventForm(!showEventForm);
+                }}
+                className="bg-red-600 hover:bg-red-500 text-white text-[9px] font-black uppercase px-2.5 py-1 flex items-center gap-1 transition-all shrink-0 cursor-pointer"
+              >
+                <PlusCircle className="w-3 h-3" />
+                {showEventForm ? "Close Form" : "+ Create Event"}
+              </button>
+            )}
+          </div>
+
+          {/* Admin Event Form */}
+          {isAdmin && showEventForm && (
+            <form onSubmit={handleEventFormSubmit} className="bg-zinc-900/90 border border-red-500/40 p-3 space-y-2.5 rounded-xs">
+              <div className="text-[9px] font-black uppercase text-red-400 tracking-wider">
+                {editingEventId ? "EDIT EVENT DETAILS" : "ORGANIZATION OF NEW OUTLAW EVENT"}
+              </div>
+              <div className="space-y-2 text-[9px]">
+                <div>
+                  <label className="text-zinc-400 block mb-1">EVENT TITLE</label>
+                  <input
+                    type="text"
+                    placeholder="e.g., MIDNIGHT ACCRA CAR PARK RALLY"
+                    value={eventTitle}
+                    onChange={(e) => setEventTitle(e.target.value)}
+                    required
+                    className="w-full bg-black border border-white/20 text-white text-[10px] p-2 outline-none font-mono"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-zinc-400 block mb-1">SPOT / LOCATION</label>
+                    <input
+                      type="text"
+                      placeholder="e.g., Accra Mall Car Park"
+                      value={eventLocation}
+                      onChange={(e) => setEventLocation(e.target.value)}
+                      required
+                      className="w-full bg-black border border-white/20 text-white text-[10px] p-1.5 outline-none font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-zinc-400 block mb-1">EVENT DATE & TIME</label>
+                    <input
+                      type="datetime-local"
+                      value={eventDateStr}
+                      onChange={(e) => setEventDateStr(e.target.value)}
+                      required
+                      className="w-full bg-black border border-white/20 text-white text-[10px] p-1.5 outline-none font-mono"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-zinc-400 block mb-1">XP REWARD</label>
+                    <input
+                      type="number"
+                      value={eventXp}
+                      onChange={(e) => setEventXp(Number(e.target.value))}
+                      className="w-full bg-black border border-white/20 text-white text-[10px] p-1.5 outline-none font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-zinc-400 block mb-1">ORGANIZER</label>
+                    <input
+                      type="text"
+                      value={(profile as any)?.handle || 'ADMIN'}
+                      disabled
+                      className="w-full bg-black/50 border border-white/10 text-zinc-500 text-[10px] p-1.5 font-mono cursor-not-allowed"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-zinc-400 block mb-1">EVENT DETAILS & RULES</label>
+                  <textarea
+                    rows={2}
+                    placeholder="Provide details about the line, meets, and rules..."
+                    value={eventDetails}
+                    onChange={(e) => setEventDetails(e.target.value)}
+                    className="w-full bg-black border border-white/20 text-white text-[10px] p-2 outline-none font-mono resize-none"
+                  />
+                </div>
+              </div>
+              <button
+                type="submit"
+                disabled={isSubmittingEvent}
+                className="w-full bg-red-600 hover:bg-red-500 text-white font-black text-[10px] uppercase py-2 cursor-pointer transition-all"
+              >
+                {isSubmittingEvent ? "SAVING EVENT..." : (editingEventId ? "UPDATE EVENT DETAILS" : "PUBLISH EVENT TO NETWORK")}
+              </button>
+            </form>
+          )}
+
+          {/* Events List */}
+          <div className="space-y-3 max-h-[340px] overflow-y-auto pr-1">
+            {eventsList && eventsList.length > 0 ? (
+              eventsList.map((ev) => {
+                const isPassed = new Date().getTime() >= new Date(ev.eventDate).getTime();
+
+                return (
+                  <div
+                    key={ev.id}
+                    className={`border p-3 space-y-2.5 transition-all ${
+                      isPassed 
+                        ? 'border-zinc-800 bg-zinc-950/30' 
+                        : 'border-red-500/30 bg-red-950/10 hover:border-red-500/60'
+                    }`}
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/10 pb-2">
+                      <div className="space-y-0.5">
+                        <span className="text-[8px] text-zinc-400 uppercase font-bold tracking-widest block">
+                          SPOT: {ev.location}
+                        </span>
+                        <h4 className={`text-xs font-black uppercase tracking-wide font-syne ${
+                          isPassed ? 'line-through text-zinc-500' : 'text-white'
+                        }`}>
+                          {ev.title}
+                        </h4>
+                      </div>
+                      
+                      <div className="flex items-center gap-2">
+                        <MinimalEventCountdown targetDate={ev.eventDate} />
+                        {isAdmin && (
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => openEditEvent(ev)}
+                              className="text-zinc-400 hover:text-white p-1 cursor-pointer"
+                              title="Edit Event Details"
+                            >
+                              <Edit3 className="w-3 h-3" />
+                            </button>
+                            {onDeleteEvent && (
+                              <button
+                                type="button"
+                                onClick={() => onDeleteEvent(ev.id)}
+                                className="text-zinc-400 hover:text-red-400 p-1 cursor-pointer"
+                                title="Delete Event"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <p className={`text-[10px] font-sans leading-relaxed select-text ${
+                      isPassed ? 'line-through text-zinc-600' : 'text-zinc-300'
+                    }`}>
+                      "{ev.details}"
+                    </p>
+
+                    <div className="flex items-center justify-between text-[8.5px] font-mono text-zinc-400 pt-1 border-t border-white/5">
+                      <span>DATE: {new Date(ev.eventDate).toLocaleString()}</span>
+                      <span className="text-amber-400 font-bold">REWARD: +{ev.xpReward} XP</span>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="text-[9px] font-mono text-zinc-500 italic text-center py-8 border border-dashed border-white/10 bg-black/20">
+                No active organized outlaw events scheduled.
+              </div>
+            )}
           </div>
         </div>
       )}

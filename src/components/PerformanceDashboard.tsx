@@ -143,7 +143,7 @@ export const PerformanceDashboard: React.FC<PerformanceDashboardProps> = ({
           onClick={() => { onPlayTick(); setActiveMetricTab('activity'); }}
           className={`py-1.5 text-[9px] font-black uppercase text-center font-mono tracking-widest transition-all cursor-pointer ${
             activeMetricTab === 'activity'
-              ? 'bg-red-500 text-white shadow-[0_0_8px_rgba(239,68,68,0.3)]'
+              ? 'bg-red-500 text-white shadow-[0_0_12px_rgba(255,0,43,0.5)]'
               : 'text-zinc-500 hover:text-white hover:bg-white/5'
           }`}
         >
@@ -236,9 +236,9 @@ export const PerformanceDashboard: React.FC<PerformanceDashboardProps> = ({
                   
                   let fill = 'rgba(255, 255, 255, 0.12)';
                   if (isSelected) {
-                    fill = '#ef4444'; // Vibrant Red
+                    fill = '#ff002b'; // Intense Pure Crimson Red
                   } else if (hasValue) {
-                    fill = 'rgba(239, 68, 68, 0.6)';
+                    fill = 'rgba(255, 0, 43, 0.75)';
                   }
 
                   return (

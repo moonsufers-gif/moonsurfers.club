@@ -2,14 +2,84 @@
 <html lang="en" class="min-h-full bg-black">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>MOONSURFERS // Global Night-Skate Zine</title>
+    
+    <!-- PWA / Bookmark App Support -->
+    <meta name="theme-color" content="#000000" />
+    <meta name="application-name" content="Moonsurfers" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Moonsurfers" />
+    
+    <link rel="manifest" href="./manifest.json" />
+    
+    <!-- Favicon and App Icons -->
+    <link rel="shortcut icon" href="/assets/brand/moonsurfers-favicon.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/assets/brand/moonsurfers-favicon.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/assets/brand/moonsurfers-favicon.png" />
+    <link rel="icon" type="image/png" href="/assets/brand/moonsurfers-favicon.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/assets/brand/moonsurfers-pwa.png" />
+    
+    <!-- SEO & Metadata -->
+    <meta name="description" content="A zine-style global night-skate movement dashboard and interactive feed featuring live maps, trick uploads, daily missions, and leaderboards." />
+    <link rel="canonical" href="https://moonsurfers.network/" />
+
+    <!-- OpenGraph & Twitter Social Cards -->
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://moonsurfers.network/" />
+    <meta property="og:site_name" content="Moonsurfers" />
+    <meta property="og:title" content="MOONSURFERS // Global Night-Skate Zine" />
+    <meta property="og:description" content="A zine-style global night-skate movement dashboard and interactive feed featuring live maps, trick uploads, daily missions, and leaderboards." />
+    <meta property="og:image" content="/assets/brand/moonsurfers-logo.png" />
+    <meta property="og:logo" content="/assets/brand/moonsurfers-logo.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="MOONSURFERS // Global Night-Skate Zine" />
+    <meta name="twitter:description" content="A zine-style global night-skate movement dashboard and interactive feed featuring live maps, trick uploads, daily missions, and leaderboards." />
+    <meta name="twitter:image" content="/assets/brand/moonsurfers-logo.png" />
+
+    <!-- Structured Data JSON-LD -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "Moonsurfers",
+      "url": "https://moonsurfers.network/",
+      "applicationCategory": "SportsApplication",
+      "operatingSystem": "All",
+      "description": "A zine-style global night-skate movement dashboard and interactive feed featuring live maps, trick uploads, daily missions, and leaderboards."
+    }
+    </script>
     <!-- Google Fonts for Editorial/Zine Aesthetic -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,700;1,400&family=Space+Grotesk:wght@400;500;700&family=Syne:wght@700;800&family=Outfit:wght@300;400;700;900&display=swap" rel="stylesheet">
+
+    <!-- Universal WebView & TV Browser Base Defaults -->
+    <style id="moonsurfers-base-css">
+      *, *::before, *::after {
+        box-sizing: border-box;
+      }
+      html, body {
+        background-color: #000000;
+        color: #ffffff;
+        font-family: "Space Grotesk", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        margin: 0;
+        padding: 0;
+        min-height: 100%;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+      #root {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background-color: #000000;
+      }
+    </style>
   </head>
-  <body class="min-h-screen bg-[#050505] text-white overflow-y-auto antialiased">
+  <body class="min-h-screen bg-black text-white overflow-y-auto antialiased">
     <div id="root" class="min-h-screen flex flex-col"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

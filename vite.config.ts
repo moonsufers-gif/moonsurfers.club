@@ -14,6 +14,12 @@ export default defineConfig(() => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    build: {
+      target: ['es2015', 'chrome60', 'edge79', 'firefox60', 'safari11'],
+      cssTarget: ['chrome60', 'firefox60', 'safari11', 'edge79'],
+      minify: 'esbuild' as const,
+      sourcemap: false
+    },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modifyâfile watching is disabled to prevent flickering during agent edits.

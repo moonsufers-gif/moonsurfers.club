@@ -2,192 +2,104 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // --- Pillar 1: Global Safety Net (Default Deny) ---
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // --- Pillar 3: Primitive Definitions & Helpers ---
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
-    function isSkateAdmin() {
-      return isSignedIn() && (
-        request.auth.token.email == 'inenepadi@gmail.com' ||
-        request.auth.token.email == 'moonsurfers@gmail.com' ||
-        request.auth.token.email == 'moonsufers@gmail.com'
-      );
-    }
-
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
-    }
-
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-
-    function incoming() {
-      return request.resource.data;
-    }
-
-    function existing() {
-      return resource.data;
-    }
-
-    // --- Pillar 2: Validation Blueprints (Typing & Structural Safety) ---
-    function isValidUser(data) {
-      return data.id is string
-        && data.handle is string && data.handle.size() >= 3 && data.handle.size() <= 40
-        && data.email is string && data.email.size() <= 100;
-    }
-
-    function isValidChallenge(data) {
-      return data.id is string
-        && data.title is string && data.title.size() <= 100
-        && data.description is string && data.description.size() <= 500
-        && data.type is string && (data.type == 'personal' || data.type == 'community')
-        && data.districtId is string
-        && data.targetSpot is string
-        && data.difficulty is string
-        && data.xpReward is int
-        && data.status is string && (data.status == 'active' || data.status == 'completed' || data.status == 'expired')
-        && data.creatorId is string;
-    }
-
-    function isValidTrickUpload(data) {
-      return data.id is string
-        && data.userUid is string
-        && data.userName is string
-        && data.districtId is string
-        && data.spotName is string
-        && data.text is string && data.text.size() <= 1000
-        && data.likesCount is int
-        && data.likedUsers is list;
-    }
-
-    function isValidDistrict(data) {
-      return data.id is string
-        && data.name is string
-        && data.code is string;
-    }
-
-    function isValidChatMessage(data) {
-      return data.id is string
-        && data.senderUid is string
-        && data.senderHandle is string
-        && data.receiverUid is string
-        && data.text is string && data.text.size() <= 2000;
-    }
-
-    function isValidCustomSpot(data) {
-      return data.id is string
-        && data.districtId is string
-        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
-        && data.description is string && data.description.size() >= 1 && data.description.size() <= 1000
-        && data.difficulty is string && (data.difficulty == 'Core' || data.difficulty == 'Concrete' || data.difficulty == 'Ledge' || data.difficulty == 'Vandal' || data.difficulty == 'Steel')
-        && data.hype is int
-        && data.coords is map
-        && data.createdBy is string;
-    }
-
     // --- COLLECTION: Skater User Profiles ---
     match /users/{userId} {
-      allow get, list: if true; // Public directories and guest view
-      allow create: if (isOwner(userId) || userId.startsWith('seed_') || userId.startsWith('guest_') || userId == 'qoEhm0ZgOVVmAIRpaKozh1pJur72')
-        && incoming().id == userId
-        && isValidUser(incoming());
-      allow update: if (isOwner(userId) || (userId.startsWith('guest_') && existing().isGuest == true))
-        && incoming().id == existing().id
-        && isValidUser(incoming())
-        && incoming().diff(existing()).affectedKeys().hasOnly([
-          'handle', 'motto', 'skateStyle', 'profilePicture', 'vhsFilter', 'avatarBorder', 
-          'tracingAllowedUsers', 'friends', 'reputation', 'level', 'badges', 
-          'dailyStreak', 'lastStreakUpdate', 'activeLocation', 'updatedAt', 'isGuest'
-        ]);
-      allow delete: if isOwner(userId);
+      allow read, write: if true;
     }
 
     // --- COLLECTION: Dynamic Skate Challenges ---
     match /challenges/{challengeId} {
-      allow get, list: if true; // Guest and users can see active challenges
-      allow create: if (isSignedIn() || challengeId.startsWith('seed_'))
-        && isValidId(challengeId)
-        && incoming().id == challengeId
-        && isValidChallenge(incoming());
-      allow update: if isSignedIn()
-        && incoming().id == existing().id
-        && (
-          // Action: Complete challenge
-          (incoming().status == 'completed' && incoming().diff(existing()).affectedKeys().hasOnly(['status']))
-        );
-      allow delete: if isSignedIn() && existing().creatorId == request.auth.uid;
+      allow read, write: if true;
     }
 
     // --- COLLECTION: Social Trick Clips Uploads ---
     match /trick_uploads/{uploadId} {
-      allow get, list: if true; // Feed stream of trick clips is public
-      allow create: if (isSignedIn() || uploadId.startsWith('seed_'))
-        && isValidId(uploadId)
-        && incoming().id == uploadId
-        && (
-          (isSignedIn() && incoming().userUid == request.auth.uid && incoming().likesCount == 0 && incoming().likedUsers.size() == 0)
-          || uploadId.startsWith('seed_')
-        )
-        && isValidTrickUpload(incoming());
-      allow update: if isSignedIn()
-        && incoming().id == existing().id
-        && incoming().userUid == existing().userUid
-        && (
-          // Action 1: Toggle like
-          incoming().diff(existing()).affectedKeys().hasOnly(['likesCount', 'likedUsers'])
-          ||
-          // Action 2: Add comment
-          incoming().diff(existing()).affectedKeys().hasOnly(['comments'])
-        );
-      allow delete: if isSignedIn() && existing().userUid == request.auth.uid;
+      allow read, write: if true;
     }
 
     // --- COLLECTION: District Sector Locations ---
     match /districts/{districtId} {
-      allow get, list: if true; // Anyone can retrieve district sectors
-      allow create, update: if isValidId(districtId)
-        && incoming().id == districtId
-        && isValidDistrict(incoming());
-      allow delete: if isSignedIn();
+      allow read, write: if true;
     }
 
     // --- COLLECTION: Direct Com-Link Messages ---
     match /direct_messages/{messageId} {
-      allow get: if isSignedIn() && (existing().senderUid == request.auth.uid || existing().receiverUid == request.auth.uid);
-      allow list: if isSignedIn() && (resource.data.senderUid == request.auth.uid || resource.data.receiverUid == request.auth.uid);
-      allow create: if isSignedIn()
-        && isValidId(messageId)
-        && incoming().id == messageId
-        && incoming().senderUid == request.auth.uid
-        && isValidChatMessage(incoming());
-      allow update, delete: if false; // Direct messages are immutable
+      allow read, write: if true;
     }
 
     // --- COLLECTION: Custom Spot GPS Registrations ---
     match /custom_spots/{spotId} {
-      allow get, list: if true; // Public spots directory
-      allow create: if isSkateAdmin()
-        && isValidId(spotId)
-        && incoming().id == spotId
-        && isOwner(incoming().createdBy)
-        && isValidCustomSpot(incoming());
-      allow update: if isSkateAdmin()
-        && incoming().id == existing().id
-        && isValidCustomSpot(incoming())
-        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'difficulty', 'hype', 'coords']);
-      allow delete: if isSkateAdmin();
+      allow read, write: if true;
+    }
+
+    // --- COLLECTION: Server Video Synced Metadata ---
+    match /video_meta/{videoId} {
+      allow read, write: if true;
+    }
+
+    // --- COLLECTION: Server Video Synced Chunks ---
+    match /video_chunks/{chunkId} {
+      allow read, write: if true;
+    }
+
+    // --- COLLECTION: Server Music Synced Metadata ---
+    match /music_meta/{trackId} {
+      allow read, write: if true;
+    }
+
+    // --- COLLECTION: Server Music Synced Chunks ---
+    match /music_chunks/{chunkId} {
+      allow read, write: if true;
     }
 
     // --- COLLECTION: Basic Connection Test Sump ---
     match /test/{testId} {
       allow read, write: if true;
     }
+
+    // --- COLLECTION: Wawoloradio Settings & DJ Curator ---
+    match /wawoloradio_settings/{settingId} {
+      allow read, write: if true;
+    }
+
+    // --- COLLECTION: Wawoloradio Playlist Tracks ---
+    match /wawoloradio_tracks/{trackId} {
+      allow read, write: if true;
+    }
+
+    // --- COLLECTION: Wawoloradio Playlists ---
+    match /wawoloradio_playlists/{playlistId} {
+      allow read, write: if true;
+    }
+
+    // --- COLLECTION: Real-Time Moon Phases & Lunar States ---
+    match /moon_phases/{phaseId} {
+      allow read, write: if true;
+    }
+
+    match /lunar_config/{configId} {
+      allow read, write: if true;
+    }
+
+    // --- COLLECTION: System Configuration & Gates ---
+    match /system_config/{configId} {
+      allow read, write: if true;
+    }
+
+    // --- COLLECTION: Outlaw Intel Feed ---
+    match /outlaw_intel/{intelId} {
+      allow read, write: if true;
+    }
+
+    // --- COLLECTION: Outlaw Events Feed ---
+    match /outlaw_events/{eventId} {
+      allow read, write: if true;
+    }
+
+    // --- CATCH-ALL RULE FOR ALL APP COLLECTIONS & SUBCOLLECTIONS ---
+    match /{document=**} {
+      allow read, write: if true;
+    }
   }
 }
+

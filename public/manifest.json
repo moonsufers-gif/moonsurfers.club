@@ -1,0 +1,26 @@
+{
+  "short_name": "Moonsurfers",
+  "name": "MOONSURFERS // Global Night-Skate Zine",
+  "description": "Global Night-Skate Zine and Street Culture Tracker",
+  "icons": [
+    {
+      "src": "/assets/brand/moonsurfers-pwa.png",
+      "type": "image/png",
+      "sizes": "192x192",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/assets/brand/moonsurfers-pwa.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#050505",
+  "theme_color": "#000000",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "fullscreen", "browser"],
+  "orientation": "any",
+  "categories": ["entertainment", "sports", "music"]
+}

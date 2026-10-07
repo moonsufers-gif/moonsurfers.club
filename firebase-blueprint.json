@@ -122,6 +122,35 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["id", "districtId", "name", "description", "difficulty", "hype", "coords", "createdBy"]
+    },
+    "WawoloradioPlaylist": {
+      "title": "WawoloRadio Playlist",
+      "description": "Scheduled playlist rotation with start and end times.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "startHour": { "type": "integer" },
+        "endHour": { "type": "integer" },
+        "trackIds": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "startHour", "endHour", "trackIds"]
+    },
+    "MoonPhase": {
+      "title": "Moon Phase Data",
+      "description": "Lunar phase record in database representing real-time moon phase configurations.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "phaseName": { "type": "string" },
+        "symbol": { "type": "string" },
+        "cycleFraction": { "type": "number" },
+        "illumination": { "type": "number" },
+        "description": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "phaseName", "symbol", "cycleFraction", "illumination"]
     }
   },
   "firestore": {
@@ -148,6 +177,14 @@
     "custom_spots/{spotId}": {
       "schema": "CustomSpot",
       "description": "Custom street spots registered by users."
+    },
+    "wawoloradio_playlists/{playlistId}": {
+      "schema": "WawoloradioPlaylist",
+      "description": "Scheduled tracks rotation playlists synced with database."
+    },
+    "moon_phases/{phaseId}": {
+      "schema": "MoonPhase",
+      "description": "Preset and active real-time moon phases stored in database."
     }
   }
 }
