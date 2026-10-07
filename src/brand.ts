@@ -1,13 +1,14 @@
+import brandLogo from './assets/images/moonsurfers-logo.png';
+import brandFavicon from './assets/images/moonsurfers-favicon.png';
+
 export const BRAND = {
-  logo: '/assets/brand/moonsurfers-logo.png',
-  favicon: '/assets/brand/moonsurfers-favicon.png',
-  publicLogo: '/assets/brand/moonsurfers-logo.png',
-  publicFavicon: '/assets/brand/moonsurfers-favicon.png',
+  logo: brandLogo,
+  favicon: brandFavicon,
+  publicLogo: '/moonsurfers-logo.png',
+  publicFavicon: '/moonsurfers-favicon.png',
+  fallbackLogo: '/assets/brand/moonsurfers-logo.png',
+  fallbackFavicon: '/assets/brand/moonsurfers-favicon.png',
   apiLogo: '/api/logo',
   apiFavicon: '/api/favicon',
-  directLogo: '/assets/brand/moonsurfers-logo.png'
+  directLogo: brandLogo
 };
-
-
-
-

@@ -109,7 +109,13 @@ import {
 
 import { PerformanceDashboard } from './components/PerformanceDashboard';
 import { UndergroundChallenges, OutlawIntelItem, OutlawEventItem } from './components/UndergroundChallenges';
-import { fetchTricksFromSupabase, syncTrickToSupabase } from './lib/supabase';
+import brandLogo from './assets/images/moonsurfers-logo.png';
+import { 
+  fetchTricksFromSupabase, 
+  syncTrickToSupabase, 
+  uploadVideoFileToSupabase, 
+  subscribeToSupabaseTricks 
+} from './lib/supabase';
 
 import { 
   signInWithPopup, 
@@ -737,6 +743,18 @@ const convertFileToBase64 = (file: File): Promise<string> => {
 };
 
 const uploadVideoToServer = async (id: string, file: File): Promise<string> => {
+  // 1. First attempt direct upload to Supabase Storage bucket 'skate_clips'
+  try {
+    const supabaseUrl = await uploadVideoFileToSupabase(file, id);
+    if (supabaseUrl) {
+      console.log(`[SYNC] Video successfully uploaded to Supabase Storage: ${supabaseUrl}`);
+      return supabaseUrl;
+    }
+  } catch (supaErr) {
+    console.warn("[SYNC] Supabase Storage upload fallback:", supaErr);
+  }
+
+  // 2. Fallback to server-side endpoint if available
   try {
     const mimeType = file.type || "video/mp4";
     console.log(`[SYNC] Uploading video tape binary ${id} (${(file.size / (1024 * 1024)).toFixed(2)} MB) to server...`);
@@ -4811,10 +4829,8 @@ export default function App() {
     profileRef.current = profile;
   }, [profile]);
 
-  // Dedicated effect to merge Supabase clips once when user logs in
+  // Real-time Supabase videos feed synchronization
   useEffect(() => {
-    if (!currentUser || hasFetchedSupabaseRef.current) return;
-    hasFetchedSupabaseRef.current = true;
     fetchTricksFromSupabase().then((supaClips) => {
       if (supaClips && supaClips.length > 0) {
         setFeeds((prev) => {
@@ -4825,7 +4841,19 @@ export default function App() {
         });
       }
     }).catch(err => console.warn('[SUPABASE] Feed merge note:', err));
-  }, [currentUser]);
+
+    // Real-Time Supabase live feed listener
+    const unsubscribeSupabase = subscribeToSupabaseTricks((newTrick) => {
+      setFeeds((prev) => {
+        if (prev.some(p => p.id === newTrick.id)) return prev;
+        return [newTrick, ...prev];
+      });
+    });
+
+    return () => {
+      unsubscribeSupabase();
+    };
+  }, []);
 
   // ==========================================
   // Real-Time Social Feed Sync (Public Global Broadcast)
@@ -7468,8 +7496,18 @@ export default function App() {
         {/* Official Brand Logo letting it breathe */}
         <div className="flex flex-col items-center justify-center space-y-3">
           <img 
-            src="/assets/brand/moonsurfers-logo.png" 
+            src={brandLogo || "/moonsurfers-logo.png"} 
             alt="MOONSURFERS Logo" 
+            onError={(e) => {
+              const el = e.currentTarget;
+              if (!el.dataset.fallbackTried) {
+                el.dataset.fallbackTried = "1";
+                el.src = "/moonsurfers-logo.png";
+              } else if (el.dataset.fallbackTried === "1") {
+                el.dataset.fallbackTried = "2";
+                el.src = "/assets/brand/moonsurfers-logo.png";
+              }
+            }}
             className="h-20 sm:h-28 md:h-32 w-auto object-contain drop-shadow-[0_0_35px_rgba(255,255,255,0.25)] animate-pulse transition-all duration-1000"
           />
         </div>
@@ -7588,8 +7626,18 @@ export default function App() {
             <div className="flex flex-col items-center space-y-2">
               <div className="flex justify-center my-1">
                 <img 
-                  src="/assets/brand/moonsurfers-logo.png" 
+                  src={brandLogo || "/moonsurfers-logo.png"} 
                   alt="MOONSURFERS Logo" 
+                  onError={(e) => {
+                    const el = e.currentTarget;
+                    if (!el.dataset.fallbackTried) {
+                      el.dataset.fallbackTried = "1";
+                      el.src = "/moonsurfers-logo.png";
+                    } else if (el.dataset.fallbackTried === "1") {
+                      el.dataset.fallbackTried = "2";
+                      el.src = "/assets/brand/moonsurfers-logo.png";
+                    }
+                  }}
                   className="h-12 sm:h-14 md:h-16 w-auto object-contain drop-shadow-[0_0_25px_rgba(255,255,255,0.2)] animate-pulse hover:scale-105 transition-all duration-700"
                 />
               </div>
