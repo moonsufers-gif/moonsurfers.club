@@ -90,6 +90,67 @@ create table if not exists skate_videos (
   created_at timestamptz default now()
 );
 
+-- ========================================================
+-- ROW LEVEL SECURITY (RLS) POLICIES FOR CLIENT READ/WRITE
+-- ========================================================
+alter table users enable row level security;
+alter table custom_spots enable row level security;
+alter table direct_messages enable row level security;
+alter table challenges enable row level security;
+alter table wawoloradio_tracks enable row level security;
+alter table skate_videos enable row level security;
+
+drop policy if exists "Allow all operations for users" on users;
+create policy "Allow all operations for users" on users for all using (true) with check (true);
+
+drop policy if exists "Allow all operations for custom_spots" on custom_spots;
+create policy "Allow all operations for custom_spots" on custom_spots for all using (true) with check (true);
+
+drop policy if exists "Allow all operations for direct_messages" on direct_messages;
+create policy "Allow all operations for direct_messages" on direct_messages for all using (true) with check (true);
+
+drop policy if exists "Allow all operations for challenges" on challenges;
+create policy "Allow all operations for challenges" on challenges for all using (true) with check (true);
+
+drop policy if exists "Allow all operations for wawoloradio_tracks" on wawoloradio_tracks;
+create policy "Allow all operations for wawoloradio_tracks" on wawoloradio_tracks for all using (true) with check (true);
+
+drop policy if exists "Allow all operations for skate_videos" on skate_videos;
+create policy "Allow all operations for skate_videos" on skate_videos for all using (true) with check (true);
+
+-- ========================================================
+-- ENABLE SUPABASE REALTIME REPLICATION
+-- ========================================================
+do $$
+begin
+  alter publication supabase_realtime add table users;
+exception when others then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table skate_videos;
+exception when others then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table custom_spots;
+exception when others then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table challenges;
+exception when others then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table direct_messages;
+exception when others then null;
+end $$;
+
 
 -- Insert Users (34)
 INSERT INTO users (id, handle, email, name, avatar, reputation, level, daily_streak, badges, active_location, friends, raw_data) VALUES ('1bbgWHGdltWPNVYHdjQHjRYeN522', 'shika_bleh_', 'naashikamckorley@gmail.com', 'shika_bleh_', NULL, 0, 1, 1, '["nomad_starter"]'::jsonb, '{"spotName":"Osu MALL UNDRGRNDPARK","districtId":"ACC","districtName":"Accra","coords":{"x":180,"y":140},"coordinatesString":"5.5501° N, 0.1963° W"}'::jsonb, '[]'::jsonb, '{"_docId":"1bbgWHGdltWPNVYHdjQHjRYeN522","email":"naashikamckorley@gmail.com","badges":["nomad_starter"],"level":1,"friends":[],"reputation":0,"activeLocation":{"spotName":"Osu MALL UNDRGRNDPARK","districtId":"ACC","districtName":"Accra","coords":{"x":180,"y":140},"coordinatesString":"5.5501° N, 0.1963° W"},"updatedAt":{"type":"firestore/timestamp/1.0","seconds":1785232064,"nanoseconds":531000000},"createdAt":{"type":"firestore/timestamp/1.0","seconds":1785231990,"nanoseconds":513000000},"id":"1bbgWHGdltWPNVYHdjQHjRYeN522","dailyStreak":1,"handle":"shika_bleh_","lastStreakUpdate":"2026-07-28"}'::jsonb) ON CONFLICT (id) DO UPDATE SET reputation = EXCLUDED.reputation, raw_data = EXCLUDED.raw_data;

@@ -28,10 +28,14 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 export async function syncUserToSupabase(userProfile: any) {
   if (!userProfile || !supabase) return;
   try {
-    const handle = userProfile.handle || userProfile.id || 'anonymous';
+    const uid = userProfile.id || userProfile.uid || userProfile.handle || 'anonymous';
+    const handle = userProfile.handle || uid;
+    const email = (userProfile.email || '').trim().toLowerCase();
+
     await supabase.from('users').upsert({
-      id: handle,
+      id: uid,
       handle: handle,
+      email: email,
       name: userProfile.name || handle,
       avatar: userProfile.avatar || userProfile.profilePicture || '',
       reputation: userProfile.reputation || 0,
@@ -43,8 +47,128 @@ export async function syncUserToSupabase(userProfile: any) {
       raw_data: userProfile,
       updated_at: new Date().toISOString()
     }, { onConflict: 'id' });
+    console.log(`[SUPABASE SYNC] Skater profile ${handle} synced to Supabase.`);
   } catch (err) {
     console.warn('[SUPABASE SYNC] User sync info:', err);
+  }
+}
+
+export async function fetchUsersFromSupabase(): Promise<any[]> {
+  if (!supabase) return [];
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .order('reputation', { ascending: false })
+      .limit(250);
+    if (error) {
+      console.warn('[SUPABASE FETCH USERS] Note:', error.message);
+      return [];
+    }
+    return (data || []).map((row: any) => {
+      const raw = row.raw_data || {};
+      return {
+        id: row.id,
+        handle: row.handle || raw.handle || 'skater',
+        email: row.email || raw.email || '',
+        name: row.name || raw.name || row.handle,
+        profilePicture: row.avatar || raw.profilePicture || '',
+        avatar: row.avatar || raw.avatar || '',
+        reputation: Number(row.reputation ?? raw.reputation ?? 0),
+        level: Number(row.level ?? raw.level ?? 1),
+        dailyStreak: Number(row.daily_streak ?? raw.dailyStreak ?? 1),
+        badges: row.badges || raw.badges || ['nomad_starter'],
+        activeLocation: row.active_location || raw.activeLocation || null,
+        friends: row.friends || raw.friends || [],
+        motto: raw.motto || '',
+        skateStyle: raw.skateStyle || 'STREET',
+        createdAt: row.created_at || raw.createdAt || new Date().toISOString(),
+        updatedAt: row.updated_at || raw.updatedAt || new Date().toISOString()
+      };
+    });
+  } catch (err) {
+    console.warn('[SUPABASE FETCH USERS] Error:', err);
+    return [];
+  }
+}
+
+export function subscribeToSupabaseUsers(onUserChange: (user: any) => void) {
+  if (!supabase) return () => {};
+  try {
+    const channel = supabase
+      .channel('public_users_realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, (payload) => {
+        const row: any = payload.new;
+        if (!row) return;
+        const raw = row.raw_data || {};
+        const userObj = {
+          id: row.id,
+          handle: row.handle || raw.handle || 'skater',
+          email: row.email || raw.email || '',
+          name: row.name || raw.name || row.handle,
+          profilePicture: row.avatar || raw.profilePicture || '',
+          avatar: row.avatar || raw.avatar || '',
+          reputation: Number(row.reputation ?? raw.reputation ?? 0),
+          level: Number(row.level ?? raw.level ?? 1),
+          dailyStreak: Number(row.daily_streak ?? raw.dailyStreak ?? 1),
+          badges: row.badges || raw.badges || ['nomad_starter'],
+          activeLocation: row.active_location || raw.activeLocation || null,
+          friends: row.friends || raw.friends || [],
+          motto: raw.motto || '',
+          skateStyle: raw.skateStyle || 'STREET',
+          createdAt: row.created_at || raw.createdAt || new Date().toISOString(),
+          updatedAt: row.updated_at || raw.updatedAt || new Date().toISOString()
+        };
+        console.log('[SUPABASE REALTIME] Live skater update received:', userObj.handle);
+        onUserChange(userObj);
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  } catch (e) {
+    console.warn('[SUPABASE REALTIME USERS] Subscription error:', e);
+    return () => {};
+  }
+}
+
+export async function signUpWithSupabase(email: string, pass: string, handle: string) {
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password: pass,
+      options: {
+        data: { handle }
+      }
+    });
+    if (error) {
+      console.warn('[SUPABASE AUTH] Sign up warning:', error.message);
+      return null;
+    }
+    return data.user;
+  } catch (err) {
+    console.warn('[SUPABASE AUTH] Sign up exception:', err);
+    return null;
+  }
+}
+
+export async function signInWithSupabase(email: string, pass: string) {
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password: pass
+    });
+    if (error) {
+      console.warn('[SUPABASE AUTH] Sign in warning:', error.message);
+      return null;
+    }
+    return data.user;
+  } catch (err) {
+    console.warn('[SUPABASE AUTH] Sign in exception:', err);
+    return null;
   }
 }
 
@@ -228,6 +352,67 @@ export async function syncCustomSpotToSupabase(spot: any) {
     }, { onConflict: 'id' });
   } catch (err) {
     console.warn('[SUPABASE SYNC] Custom spot sync info:', err);
+  }
+}
+
+export async function fetchCustomSpotsFromSupabase(): Promise<any[]> {
+  if (!supabase) return [];
+  try {
+    const { data, error } = await supabase.from('custom_spots').select('*').limit(100);
+    if (error) {
+      console.warn('[SUPABASE FETCH SPOTS] Note:', error.message);
+      return [];
+    }
+    return (data || []).map((row: any) => {
+      const raw = row.raw_data || {};
+      return {
+        id: row.id,
+        districtId: row.district_id || 'ACC',
+        name: row.name || 'Unnamed Spot',
+        description: row.description || '',
+        difficulty: row.difficulty || 'Concrete',
+        hype: row.hype || 50,
+        coords: row.coords || { x: 160, y: 140 },
+        createdBy: row.created_by || 'system',
+        createdAt: row.created_at,
+        ...raw
+      };
+    });
+  } catch (e) {
+    console.warn('[SUPABASE FETCH SPOTS] Error:', e);
+    return [];
+  }
+}
+
+export function subscribeToSupabaseSpots(onSpotChange: (spot: any) => void) {
+  if (!supabase) return () => {};
+  try {
+    const channel = supabase
+      .channel('public_custom_spots_realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'custom_spots' }, (payload) => {
+        const row: any = payload.new;
+        if (!row) return;
+        const raw = row.raw_data || {};
+        const spotObj = {
+          id: row.id,
+          districtId: row.district_id || 'ACC',
+          name: row.name || 'Unnamed Spot',
+          description: row.description || '',
+          difficulty: row.difficulty || 'Concrete',
+          hype: row.hype || 50,
+          coords: row.coords || { x: 160, y: 140 },
+          createdBy: row.created_by || 'system',
+          createdAt: row.created_at,
+          ...raw
+        };
+        onSpotChange(spotObj);
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  } catch (e) {
+    return () => {};
   }
 }
 
