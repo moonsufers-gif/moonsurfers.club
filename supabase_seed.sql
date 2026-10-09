@@ -1,3 +1,5 @@
+
+
 -- ========================================================
 -- MOONSURFERS DATABASE MIGRATION SCRIPT FOR SUPABASE
 -- Generated on: 2026-10-07T09:41:40.425Z
@@ -98,6 +100,9 @@ INSERT INTO wawoloradio_tracks (id, title, artist, url, duration, order_index, u
 
 DELETE FROM users WHERE id = 'inene233_profile' OR (handle = 'inene233' AND id != 'qoEhm0ZgOVVmAIRpaKozh1pJur72');
 
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_handle_key;
+DROP INDEX IF EXISTS users_handle_key;
+DELETE FROM users WHERE id = 'inene233_profile' OR (handle = 'inene233' AND id != 'qoEhm0ZgOVVmAIRpaKozh1pJur72');
 
 -- ========================================================
 -- ROW LEVEL SECURITY (RLS) POLICIES FOR CLIENT READ/WRITE
@@ -266,4 +271,3 @@ INSERT INTO challenges (id, title, description, district_id, target_spot, user_i
 INSERT INTO challenges (id, title, description, district_id, target_spot, user_id, creator_id, difficulty, type, xp_reward, status, raw_data) VALUES ('ch_1785293146658_300', 'Slay Makola Market Rails', 'Outride local block dispatch alerts after mapping the Makola Market Rails. Status: [active patrols]. Stay offline.', 'ACC', 'Makola Market Rails', 'qoEhm0ZgOVVmAIRpaKozh1pJur72', 'system_engine', 'Vandal', 'personal', 3845, 'active', '{"_docId":"ch_1785293146658_300","createdAt":{"type":"firestore/timestamp/1.0","seconds":1785293146,"nanoseconds":915000000},"status":"active","difficulty":"Vandal","description":"Outride local block dispatch alerts after mapping the Makola Market Rails. Status: [active patrols]. Stay offline.","id":"ch_1785293146658_300","districtId":"ACC","userId":"qoEhm0ZgOVVmAIRpaKozh1pJur72","type":"personal","title":"Slay Makola Market Rails","xpReward":3845,"targetSpot":"Makola Market Rails","creatorId":"system_engine"}'::jsonb) ON CONFLICT (id) DO NOTHING;
 INSERT INTO challenges (id, title, description, district_id, target_spot, user_id, creator_id, difficulty, type, xp_reward, status, raw_data) VALUES ('ch_1785293159224_113', 'Slay Kumasi', 'Slide a backside boardslide on the Kumasi. Status: [LOW HEAT]. Stay offline.', 'ACC', 'Kumasi', 'qoEhm0ZgOVVmAIRpaKozh1pJur72', 'system_engine', 'Core', 'personal', 3595, 'active', '{"_docId":"ch_1785293159224_113","title":"Slay Kumasi","targetSpot":"Kumasi","creatorId":"system_engine","xpReward":3595,"districtId":"ACC","createdAt":{"type":"firestore/timestamp/1.0","seconds":1785293159,"nanoseconds":618000000},"userId":"qoEhm0ZgOVVmAIRpaKozh1pJur72","id":"ch_1785293159224_113","description":"Slide a backside boardslide on the Kumasi. Status: [LOW HEAT]. Stay offline.","difficulty":"Core","status":"active","type":"personal"}'::jsonb) ON CONFLICT (id) DO NOTHING;
 INSERT INTO challenges (id, title, description, district_id, target_spot, user_id, creator_id, difficulty, type, xp_reward, status, raw_data) VALUES ('seed_ch_1', 'Slay Osu Castle Stairs', 'Slide a backside boardslide on the Osu Castle Wall. Keep high alert.', 'ACC', 'Osu Castle Wall', NULL, 'system_engine', 'Core', 'community', 350, 'active', '{"_docId":"seed_ch_1","createdAt":{"type":"firestore/timestamp/1.0","seconds":1785931485,"nanoseconds":364000000},"title":"Slay Osu Castle Stairs","id":"seed_ch_1","xpReward":350,"description":"Slide a backside boardslide on the Osu Castle Wall. Keep high alert.","targetSpot":"Osu Castle Wall","difficulty":"Core","creatorId":"system_engine","type":"community","status":"active","districtId":"ACC"}'::jsonb) ON CONFLICT (id) DO NOTHING;
-
