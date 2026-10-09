@@ -100,8 +100,8 @@ INSERT INTO wawoloradio_tracks (id, title, artist, url, duration, order_index, u
 
 DELETE FROM users WHERE id = 'inene233_profile' OR (handle = 'inene233' AND id != 'qoEhm0ZgOVVmAIRpaKozh1pJur72');
 
-ALTER TABLE users DROP CONSTRAINT IF EXISTS users_handle_key;
-DROP INDEX IF EXISTS users_handle_key;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS inene233_profile;
+DROP INDEX IF EXISTS inene233_profile;
 DELETE FROM users WHERE id = 'inene233_profile' OR (handle = 'inene233' AND id != 'qoEhm0ZgOVVmAIRpaKozh1pJur72');
 
 -- ========================================================
