@@ -1,5 +1,3 @@
-
-
 -- ========================================================
 -- MOONSURFERS DATABASE MIGRATION SCRIPT FOR SUPABASE
 -- Generated on: 2026-10-07T09:41:40.425Z
