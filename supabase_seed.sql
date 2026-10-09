@@ -90,6 +90,15 @@ create table if not exists skate_videos (
   created_at timestamptz default now()
 );
 
+-- Insert Radio Tracks (4)
+INSERT INTO wawoloradio_tracks (id, title, artist, url, duration, order_index, uploaded_by) VALUES ('track_4b35ecb2-15ac-454c-9e74-d06584dad16b', 'IRON BOY', 'KIRANI AYAT', '/api/music/play/track_4b35ecb2-15ac-454c-9e74-d06584dad16b', 144.048005, 2, 'inene233') ON CONFLICT (id) DO NOTHING;
+INSERT INTO wawoloradio_tracks (id, title, artist, url, duration, order_index, uploaded_by) VALUES ('track_5d46f54f-6f8f-460c-a553-865437556439', 'BREATHE', 'KAY T', '/api/music/play/track_5d46f54f-6f8f-460c-a553-865437556439', 119.264014, 0, 'inene233') ON CONFLICT (id) DO NOTHING;
+INSERT INTO wawoloradio_tracks (id, title, artist, url, duration, order_index, uploaded_by) VALUES ('track_ada471d3-c491-4f0a-9c2d-bdb5f13ba5fe', 'rosso freestyle', 'copta', '/api/music/play/track_ada471d3-c491-4f0a-9c2d-bdb5f13ba5fe', 132.778662, 3, 'inene233') ON CONFLICT (id) DO NOTHING;
+INSERT INTO wawoloradio_tracks (id, title, artist, url, duration, order_index, uploaded_by) VALUES ('track_c95fafdd-c6aa-4ea2-b51a-13fc324160f2', 'VVS', 'RJZ', '/api/music/play/track_c95fafdd-c6aa-4ea2-b51a-13fc324160f2', 195.07551, 1, 'inene233') ON CONFLICT (id) DO NOTHING;
+
+DELETE FROM users WHERE id = 'inene233_profile' OR (handle = 'inene233' AND id != 'qoEhm0ZgOVVmAIRpaKozh1pJur72');
+
+
 -- ========================================================
 -- ROW LEVEL SECURITY (RLS) POLICIES FOR CLIENT READ/WRITE
 -- ========================================================
@@ -258,10 +267,3 @@ INSERT INTO challenges (id, title, description, district_id, target_spot, user_i
 INSERT INTO challenges (id, title, description, district_id, target_spot, user_id, creator_id, difficulty, type, xp_reward, status, raw_data) VALUES ('ch_1785293159224_113', 'Slay Kumasi', 'Slide a backside boardslide on the Kumasi. Status: [LOW HEAT]. Stay offline.', 'ACC', 'Kumasi', 'qoEhm0ZgOVVmAIRpaKozh1pJur72', 'system_engine', 'Core', 'personal', 3595, 'active', '{"_docId":"ch_1785293159224_113","title":"Slay Kumasi","targetSpot":"Kumasi","creatorId":"system_engine","xpReward":3595,"districtId":"ACC","createdAt":{"type":"firestore/timestamp/1.0","seconds":1785293159,"nanoseconds":618000000},"userId":"qoEhm0ZgOVVmAIRpaKozh1pJur72","id":"ch_1785293159224_113","description":"Slide a backside boardslide on the Kumasi. Status: [LOW HEAT]. Stay offline.","difficulty":"Core","status":"active","type":"personal"}'::jsonb) ON CONFLICT (id) DO NOTHING;
 INSERT INTO challenges (id, title, description, district_id, target_spot, user_id, creator_id, difficulty, type, xp_reward, status, raw_data) VALUES ('seed_ch_1', 'Slay Osu Castle Stairs', 'Slide a backside boardslide on the Osu Castle Wall. Keep high alert.', 'ACC', 'Osu Castle Wall', NULL, 'system_engine', 'Core', 'community', 350, 'active', '{"_docId":"seed_ch_1","createdAt":{"type":"firestore/timestamp/1.0","seconds":1785931485,"nanoseconds":364000000},"title":"Slay Osu Castle Stairs","id":"seed_ch_1","xpReward":350,"description":"Slide a backside boardslide on the Osu Castle Wall. Keep high alert.","targetSpot":"Osu Castle Wall","difficulty":"Core","creatorId":"system_engine","type":"community","status":"active","districtId":"ACC"}'::jsonb) ON CONFLICT (id) DO NOTHING;
 
--- Insert Radio Tracks (4)
-INSERT INTO wawoloradio_tracks (id, title, artist, url, duration, order_index, uploaded_by) VALUES ('track_4b35ecb2-15ac-454c-9e74-d06584dad16b', 'IRON BOY', 'KIRANI AYAT', '/api/music/play/track_4b35ecb2-15ac-454c-9e74-d06584dad16b', 144.048005, 2, 'inene233') ON CONFLICT (id) DO NOTHING;
-INSERT INTO wawoloradio_tracks (id, title, artist, url, duration, order_index, uploaded_by) VALUES ('track_5d46f54f-6f8f-460c-a553-865437556439', 'BREATHE', 'KAY T', '/api/music/play/track_5d46f54f-6f8f-460c-a553-865437556439', 119.264014, 0, 'inene233') ON CONFLICT (id) DO NOTHING;
-INSERT INTO wawoloradio_tracks (id, title, artist, url, duration, order_index, uploaded_by) VALUES ('track_ada471d3-c491-4f0a-9c2d-bdb5f13ba5fe', 'rosso freestyle', 'copta', '/api/music/play/track_ada471d3-c491-4f0a-9c2d-bdb5f13ba5fe', 132.778662, 3, 'inene233') ON CONFLICT (id) DO NOTHING;
-INSERT INTO wawoloradio_tracks (id, title, artist, url, duration, order_index, uploaded_by) VALUES ('track_c95fafdd-c6aa-4ea2-b51a-13fc324160f2', 'VVS', 'RJZ', '/api/music/play/track_c95fafdd-c6aa-4ea2-b51a-13fc324160f2', 195.07551, 1, 'inene233') ON CONFLICT (id) DO NOTHING;
-
-DELETE FROM users WHERE id = 'inene233_profile' OR (handle = 'inene233' AND id != 'qoEhm0ZgOVVmAIRpaKozh1pJur72');
