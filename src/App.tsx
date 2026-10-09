@@ -760,7 +760,23 @@ const uploadVideoToServer = async (id: string, file: File): Promise<string> => {
     console.warn("[SYNC] Supabase Storage upload fallback:", supaErr);
   }
 
-  // 2. Fallback to server-side endpoint if available
+  // 2. Fallback to base64 data URL if file is <= 6MB (works everywhere, zero server needed)
+  if (file.size <= 6 * 1024 * 1024) {
+    try {
+      const dataUrl = await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(file);
+      });
+      if (dataUrl && dataUrl.startsWith('data:video/')) {
+        console.log(`[SYNC] Video successfully converted to portable data URL for instant viewing.`);
+        return dataUrl;
+      }
+    } catch (e) {}
+  }
+
+  // 3. Fallback to server-side endpoint if available
   try {
     const mimeType = file.type || "video/mp4";
     console.log(`[SYNC] Uploading video tape binary ${id} (${(file.size / (1024 * 1024)).toFixed(2)} MB) to server...`);
@@ -1631,7 +1647,7 @@ const AutoplayVideo: React.FC<AutoplayVideoProps> = ({ src, fallbackSrc }) => {
       return clipRetryCount > 0 ? `${currentSrc}${currentSrc.includes('?') ? '&' : '?'}retry=${clipRetryCount}` : currentSrc;
     }
     
-    // If it starts with http or https and does not point to our own api, proxy it
+    // If it starts with http or https, play directly (especially Supabase Storage URLs)
     if (currentSrc.startsWith("http://") || currentSrc.startsWith("https://")) {
       if (currentSrc.includes(window.location.host)) {
         try {
@@ -1641,7 +1657,7 @@ const AutoplayVideo: React.FC<AutoplayVideoProps> = ({ src, fallbackSrc }) => {
           return currentSrc;
         }
       }
-      return `/api/proxy-video?url=${encodeURIComponent(currentSrc)}`;
+      return currentSrc;
     }
     return currentSrc;
   }, [src, fallbackSrc, fallbackLevel, clipRetryCount, isCustomUserClip]);
@@ -4284,8 +4300,12 @@ export default function App() {
           ]
         };
 
-        // Create the district in Firestore database
-        await setDoc(doc(db, 'districts', cleanId), customDistrictObj);
+        // Create the district in Firestore database (safe if blocked)
+        try {
+          await setDoc(doc(db, 'districts', cleanId), customDistrictObj);
+        } catch (dErr) {
+          console.warn("[SIGNUP] Custom district database write note:", dErr);
+        }
         sectorIdToSet = cleanId;
         addTickerMessage(`[INTELLIGENCE RELEASED] NEW SECTOR ENLISTED: [${cleanId}]`);
       }
@@ -4949,7 +4969,19 @@ export default function App() {
           performanceScore: item.performanceScore !== undefined ? item.performanceScore : Math.min(100, 60 + ((item.text || '').length % 35))
         });
       });
-      setFeeds(loaded);
+      // Merge Firestore uploads with existing Supabase & local uploads without wiping
+      setFeeds((prev) => {
+        const feedMap = new Map<string, LiveTrickUpload>();
+        prev.forEach(p => feedMap.set(p.id, p));
+        loaded.forEach(item => feedMap.set(item.id, item));
+        const list = Array.from(feedMap.values());
+        list.sort((a, b) => {
+          const tA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const tB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return tB - tA;
+        });
+        return list;
+      });
       
       // Update global sound / ticker alert on incoming stunt in real-time (no bots, no initial load triggers)
       if (!isInitialTrickLoad.current) {
@@ -4973,7 +5005,10 @@ export default function App() {
         if (res.ok) {
           const data = await res.json();
           if (data.success && data.feeds) {
-            setFeeds(data.feeds);
+            setFeeds(prev => {
+              if (prev.length > 0) return prev;
+              return data.feeds;
+            });
             console.log("[SYNC] Successfully recovered feed clips via HTTP backend proxy.");
           }
         }
@@ -5058,7 +5093,14 @@ export default function App() {
   // ==========================================
   useEffect(() => {
     const processUserData = (rawUsers: any[]) => {
-      const skaterMap = new Map<string, SkateProfile>();
+      setAllSkaters((prev) => {
+        const skaterMap = new Map<string, SkateProfile>();
+        prev.forEach((existing) => {
+          const mapKey = existing.handle?.toLowerCase() || existing.email?.toLowerCase() || existing.id;
+          if (mapKey) {
+            skaterMap.set(mapKey, existing);
+          }
+        });
 
       rawUsers.forEach((item) => {
         if (item && item.id) {
@@ -5116,18 +5158,20 @@ export default function App() {
       });
 
       uList.sort((a, b) => (b.reputation || 0) - (a.reputation || 0));
-      setAllSkaters(uList);
 
       // Keep current user profile's friends list synchronized & purged of deleted accounts
-      setProfile((prev) => {
-        if (!prev || !Array.isArray(prev.friends)) return prev;
-        const sanitized = prev.friends.filter(f => typeof f === 'string' && activeHandlesSet.has(f.toLowerCase().trim().replace(/^@/, '')));
-        if (sanitized.length !== prev.friends.length) {
-          return { ...prev, friends: sanitized };
+      setProfile((prevProfile) => {
+        if (!prevProfile || !Array.isArray(prevProfile.friends)) return prevProfile;
+        const sanitized = prevProfile.friends.filter(f => typeof f === 'string' && activeHandlesSet.has(f.toLowerCase().trim().replace(/^@/, '')));
+        if (sanitized.length !== prevProfile.friends.length) {
+          return { ...prevProfile, friends: sanitized };
         }
-        return prev;
+        return prevProfile;
       });
-    };
+
+      return uList;
+    });
+  };
 
     // 1. Initial Supabase fetch for community skaters
     fetchUsersFromSupabase().then((supaUsers) => {

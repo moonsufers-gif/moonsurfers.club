@@ -1052,7 +1052,7 @@ export async function purgeMoonsurferAndGrantPointsToInene() {
     }
 
     try {
-      const ineneDocRef = doc(db, 'users', 'inene233_profile');
+      const ineneDocRef = doc(db, 'users', 'qoEhm0ZgOVVmAIRpaKozh1pJur72');
       const ineneDocSnap = await getDoc(ineneDocRef);
       if (ineneDocSnap.exists()) {
         const data = ineneDocSnap.data() as SkateProfile;
@@ -1065,10 +1065,10 @@ export async function purgeMoonsurferAndGrantPointsToInene() {
           level: newLevel,
           updatedAt: new Date().toISOString()
         });
-        console.log(`[MIGRATION] Updated inene233_profile doc with reputation ${newRep}`);
+        console.log(`[MIGRATION] Updated inene doc with reputation ${newRep}`);
       }
     } catch (err) {
-      console.warn("Error updating inene233_profile doc:", err);
+      console.warn("Error updating inene doc:", err);
     }
   } catch (err) {
     console.warn("Error running purgeMoonsurferAndGrantPointsToInene migration:", err);
@@ -1089,7 +1089,7 @@ export async function seedDefaultDataIfEmpty() {
     try {
       const DEFAULT_USERS: SkateProfile[] = [
         {
-          id: "inene233_profile",
+          id: "qoEhm0ZgOVVmAIRpaKozh1pJur72",
           handle: "inene233",
           email: "inenepadi@gmail.com",
           level: 231,
