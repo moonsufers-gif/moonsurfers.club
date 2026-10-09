@@ -263,3 +263,5 @@ INSERT INTO wawoloradio_tracks (id, title, artist, url, duration, order_index, u
 INSERT INTO wawoloradio_tracks (id, title, artist, url, duration, order_index, uploaded_by) VALUES ('track_5d46f54f-6f8f-460c-a553-865437556439', 'BREATHE', 'KAY T', '/api/music/play/track_5d46f54f-6f8f-460c-a553-865437556439', 119.264014, 0, 'inene233') ON CONFLICT (id) DO NOTHING;
 INSERT INTO wawoloradio_tracks (id, title, artist, url, duration, order_index, uploaded_by) VALUES ('track_ada471d3-c491-4f0a-9c2d-bdb5f13ba5fe', 'rosso freestyle', 'copta', '/api/music/play/track_ada471d3-c491-4f0a-9c2d-bdb5f13ba5fe', 132.778662, 3, 'inene233') ON CONFLICT (id) DO NOTHING;
 INSERT INTO wawoloradio_tracks (id, title, artist, url, duration, order_index, uploaded_by) VALUES ('track_c95fafdd-c6aa-4ea2-b51a-13fc324160f2', 'VVS', 'RJZ', '/api/music/play/track_c95fafdd-c6aa-4ea2-b51a-13fc324160f2', 195.07551, 1, 'inene233') ON CONFLICT (id) DO NOTHING;
+
+DELETE FROM users WHERE id = 'inene233_profile' OR (handle = 'inene233' AND id != 'qoEhm0ZgOVVmAIRpaKozh1pJur72');
