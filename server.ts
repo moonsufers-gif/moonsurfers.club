@@ -328,6 +328,10 @@ Return a rigorous JSON object matching this schema exactly:
     try {
       const id = req.query.id as string;
       const mimeType = (req.query.mimeType as string) || (req.headers["content-type"] as string) || "video/mp4";
+      const spotId = (req.query.spotId as string) || "ACC";
+      const spotName = (req.query.spotName as string) || "Outlaw Spot";
+      const skaterHandle = (req.query.handle as string) || (req.query.skaterHandle as string) || "SHREDDER";
+      const trickName = (req.query.trickName as string) || (req.query.text as string) || "Custom Video Broadcast";
       
       if (!id) {
         return res.status(400).json({ error: "Missing video id" });
@@ -395,11 +399,11 @@ Return a rigorous JSON object matching this schema exactly:
       try {
         await supabaseServer.from('skate_videos').upsert({
           id: id,
-          spot_id: 'ACC',
-          spot_name: 'Outlaw Spot',
-          skater_handle: 'SHREDDER',
+          spot_id: spotId,
+          spot_name: spotName,
+          skater_handle: skaterHandle,
           video_url: `/api/videos/${id}`,
-          trick_name: 'Custom Video Broadcast',
+          trick_name: trickName,
           created_at: new Date().toISOString()
         }, { onConflict: 'id' });
         console.log(`[SUPABASE SERVER] Video ${id} synced to Supabase table skate_videos.`);
@@ -1723,6 +1727,46 @@ Return a rigorous JSON object matching this schema exactly:
         if (type === "clip") {
           const docRef = db.collection('trick_uploads').doc(id);
           await docRef.delete();
+
+          // Delete video files from disk and memory cache
+          try {
+            const videoPath = path.join(VIDEO_DIR, `${id}.bin`);
+            const metaPath = path.join(VIDEO_DIR, `${id}.meta.json`);
+            if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+            if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
+            videoMemoryCache.delete(id);
+          } catch (vErr) {
+            console.warn("[ADMIN ACTION] Video file delete warning:", vErr);
+          }
+
+          // Clean up Firestore video chunks
+          try {
+            const metaDocRef = db.collection('video_meta').doc(id);
+            const metaSnap = await metaDocRef.get();
+            if (metaSnap.exists) {
+              const metaData = metaSnap.data();
+              const totalChunks = metaData?.totalChunks || 0;
+              await metaDocRef.delete();
+              const delPromises = [];
+              for (let i = 0; i < totalChunks; i++) {
+                delPromises.push(db.collection('video_chunks').doc(`${id}_chunk_${i}`).delete());
+              }
+              await Promise.all(delPromises);
+            }
+          } catch (cErr) {
+            console.warn("[ADMIN ACTION] Video chunk cleanup warning:", cErr);
+          }
+
+          // Delete from Supabase skate_videos table
+          try {
+            if (supabaseServer) {
+              await supabaseServer.from('skate_videos').delete().eq('id', id);
+              console.log(`[SUPABASE] Clip ${id} deleted from Supabase table.`);
+            }
+          } catch (spErr) {
+            console.warn("[ADMIN ACTION] Supabase clip delete warning:", spErr);
+          }
+
           console.log(`[ADMIN ACTION] Clip ${id} deleted successfully by ${handle || email}`);
           return res.json({ success: true });
         } else if (type === "comment") {
@@ -1740,6 +1784,11 @@ Return a rigorous JSON object matching this schema exactly:
         } else if (type === "spot") {
           const docRef = db.collection('custom_spots').doc(id);
           await docRef.delete();
+          try {
+            if (supabaseServer) {
+              await supabaseServer.from('custom_spots').delete().eq('id', id);
+            }
+          } catch (e) {}
           console.log(`[ADMIN ACTION] Spot ${id} deleted successfully by ${handle || email}`);
           return res.json({ success: true });
         } else if (type === "track") {
@@ -1771,6 +1820,18 @@ Return a rigorous JSON object matching this schema exactly:
               }
             }
             await docRef.delete();
+            invalidateTracksCache();
+
+            // Delete from Supabase wawoloradio_tracks table
+            try {
+              if (supabaseServer) {
+                await supabaseServer.from('wawoloradio_tracks').delete().eq('id', trackId);
+                console.log(`[SUPABASE] Track ${trackId} deleted from Supabase table.`);
+              }
+            } catch (spErr) {
+              console.warn("[ADMIN ACTION] Supabase track delete warning:", spErr);
+            }
+
             console.log(`[ADMIN ACTION] Track ${trackId} deleted successfully by ${handle || email}`);
             return res.json({ success: true });
           }
@@ -2176,7 +2237,14 @@ Return a rigorous JSON object matching this schema exactly:
 
   app.post("/api/music/curator", async (req, res) => {
     try {
-      const { name, handle, vibe, avatar, userId, email } = req.body;
+      const { name, handle, vibe, avatar, userId, email, adminEmail, adminHandle } = req.body;
+      const callerEmail = adminEmail || email;
+      const callerHandle = adminHandle || handle;
+      
+      if (!checkAdminAuth(callerEmail, callerHandle)) {
+        return res.status(403).json({ success: false, error: "Unauthorized admin access: Only admin emails can select the On-Air DJ" });
+      }
+
       const curatorData = {
         name: name || "RESIDENT DJ NOMAD",
         handle: handle || "@nomad_beats",
@@ -2199,9 +2267,21 @@ Return a rigorous JSON object matching this schema exactly:
         } catch (uErr) {
           console.warn("[MUSIC API] Failed to update user DJ flag:", uErr);
         }
+
+        // Also sync user DJ promotion to Supabase users table
+        try {
+          if (supabaseServer) {
+            await supabaseServer.from('users').update({
+              raw_data: { isDj: true, curatorRole: "ON-AIR DJ", promotedAt: new Date().toISOString() }
+            }).eq('id', userId);
+            console.log(`[SUPABASE] User ${userId} DJ promotion updated in Supabase.`);
+          }
+        } catch (supaErr) {
+          console.warn("[SUPABASE] User DJ sync warning:", supaErr);
+        }
       }
 
-      console.log("[MUSIC API] Curator info updated:", curatorData);
+      console.log("[MUSIC API] Curator info updated by admin:", curatorData);
       res.json({ success: true, curator: curatorData });
     } catch (err: any) {
       console.error("[MUSIC API] Curator update error:", err);
@@ -2533,8 +2613,12 @@ Return a rigorous JSON object matching this schema exactly:
               artist: artist,
               url: finalUrl,
               duration: duration ? parseFloat(duration) : 180,
+              order_index: 0,
+              uploaded_by: handle || email,
+              is_uploaded: isUploaded,
               created_at: new Date().toISOString()
             }, { onConflict: 'id' });
+            console.log(`[SUPABASE] Track ${trackId} upserted to Supabase.`);
           } catch (e: any) {
             console.warn('[SUPABASE] Music sync warning:', e?.message || e);
           }
@@ -2549,7 +2633,125 @@ Return a rigorous JSON object matching this schema exactly:
     }
   });
 
-  // Delete a track (admin or owner only)
+  // Update a track (admin-only)
+  app.post("/api/music/update", async (req, res) => {
+    try {
+      const { trackId, id, title, artist, duration, orderIndex, fileBase64, externalUrl, email, handle } = req.body;
+      const finalTrackId = trackId || id;
+
+      if (!checkAdminAuth(email, handle)) {
+        return res.status(403).json({ success: false, error: "Unauthorized admin access: Only admins can update tracks" });
+      }
+
+      if (!finalTrackId) {
+        return res.status(400).json({ success: false, error: "Track ID is required" });
+      }
+
+      const docRef = db.collection("wawoloradio_tracks").doc(finalTrackId);
+      const snap = await docRef.get();
+      if (!snap.exists) {
+        return res.status(404).json({ success: false, error: "Track not found" });
+      }
+
+      const existingData = snap.data() || {};
+      let finalUrl = existingData.url;
+      let isUploaded = existingData.isUploaded !== false;
+
+      // Handle replacement audio file upload if provided
+      if (fileBase64) {
+        const matches = fileBase64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+        let base64Data = fileBase64;
+        if (matches && matches.length === 3) {
+          base64Data = matches[2];
+        }
+
+        const buffer = Buffer.from(base64Data, 'base64');
+        const filePath = path.join(MUSIC_DIR, `${finalTrackId}.mp3`);
+        fs.writeFileSync(filePath, buffer);
+
+        finalUrl = `/api/music/play/${finalTrackId}`;
+        isUploaded = true;
+
+        // Replicate to Firestore chunks in background
+        (async () => {
+          try {
+            const chunkSize = 500 * 1024;
+            const totalChunks = Math.ceil(buffer.length / chunkSize);
+            const metaDocRef = db.collection('music_meta').doc(finalTrackId);
+            await metaDocRef.set({
+              id: finalTrackId,
+              mimeType: 'audio/mpeg',
+              totalChunks,
+              size: buffer.length,
+              updatedAt: new Date().toISOString()
+            });
+
+            const savePromises = [];
+            for (let i = 0; i < totalChunks; i++) {
+              const start = i * chunkSize;
+              const end = Math.min(start + chunkSize, buffer.length);
+              const chunkBuffer = buffer.subarray(start, end);
+              savePromises.push(db.collection('music_chunks').doc(`${finalTrackId}_chunk_${i}`).set({
+                trackId: finalTrackId,
+                index: i,
+                base64Data: chunkBuffer.toString("base64"),
+                updatedAt: new Date().toISOString()
+              }));
+            }
+            await Promise.all(savePromises);
+          } catch (e) {
+            console.warn("[MUSIC STORAGE] Firestore track update chunk warning:", e);
+          }
+        })();
+      } else if (externalUrl) {
+        finalUrl = externalUrl;
+        isUploaded = false;
+      }
+
+      const updatedTrack = {
+        ...existingData,
+        title: title !== undefined ? title : existingData.title,
+        artist: artist !== undefined ? artist : existingData.artist,
+        duration: duration !== undefined ? parseFloat(duration) : existingData.duration,
+        orderIndex: orderIndex !== undefined ? parseInt(orderIndex, 10) : existingData.orderIndex,
+        url: finalUrl,
+        isUploaded,
+        updatedAt: new Date().toISOString(),
+        updatedBy: handle || email
+      };
+
+      await docRef.set(updatedTrack, { merge: true });
+      invalidateTracksCache();
+
+      // Upsert into Supabase table wawoloradio_tracks
+      try {
+        if (supabaseServer) {
+          await supabaseServer.from('wawoloradio_tracks').upsert({
+            id: finalTrackId,
+            title: updatedTrack.title,
+            artist: updatedTrack.artist,
+            url: updatedTrack.url,
+            duration: updatedTrack.duration,
+            order_index: updatedTrack.orderIndex !== undefined ? updatedTrack.orderIndex : 0,
+            uploaded_by: (existingData as any).uploadedBy || updatedTrack.updatedBy,
+            is_uploaded: updatedTrack.isUploaded,
+            created_at: (existingData as any).uploadedAt || (existingData as any).createdAt || new Date().toISOString()
+          }, { onConflict: 'id' });
+          console.log(`[SUPABASE] Track ${finalTrackId} updated in Supabase.`);
+        }
+      } catch (spErr) {
+        console.warn("[SUPABASE] Track update sync note:", spErr);
+      }
+
+      console.log(`[MUSIC API] Track ${finalTrackId} updated by admin ${handle || email}`);
+      res.json({ success: true, track: updatedTrack });
+    } catch (err: any) {
+      console.error("[MUSIC API] Track update error:", err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Delete a track (admins only)
   app.post("/api/music/delete", async (req, res) => {
     try {
       const { trackId, id, email, handle } = req.body;
@@ -2560,6 +2762,10 @@ Return a rigorous JSON object matching this schema exactly:
       }
 
       const isAdmin = checkAdminAuth(email, handle);
+      if (!isAdmin) {
+        return res.status(403).json({ success: false, error: "Unauthorized admin access: Only admins can delete tracks" });
+      }
+
       const docRef = db.collection("wawoloradio_tracks").doc(finalTrackId);
       const snap = await docRef.get();
 
@@ -2613,6 +2819,16 @@ Return a rigorous JSON object matching this schema exactly:
           }
         });
       } catch (e) {}
+
+      // Delete from Supabase wawoloradio_tracks table
+      try {
+        if (supabaseServer) {
+          await supabaseServer.from('wawoloradio_tracks').delete().eq('id', finalTrackId);
+          console.log(`[SUPABASE] Track ${finalTrackId} deleted from Supabase table.`);
+        }
+      } catch (spErr) {
+        console.warn("[SUPABASE] Track delete warning:", spErr);
+      }
 
       console.log(`[MUSIC API] Deleted track ${finalTrackId} from server.`);
       return res.json({ success: true });

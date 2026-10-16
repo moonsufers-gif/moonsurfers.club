@@ -115,10 +115,15 @@ import {
   uploadVideoFileToSupabase, 
   fetchTricksFromSupabase,
   subscribeToSupabaseTricks,
+  deleteTrickFromSupabase,
   fetchUsersFromSupabase,
   subscribeToSupabaseUsers,
   fetchCustomSpotsFromSupabase,
   subscribeToSupabaseSpots,
+  syncWawoloTrackToSupabase,
+  deleteWawoloTrackFromSupabase,
+  fetchWawoloTracksFromSupabase,
+  subscribeToSupabaseTracks,
   signUpWithSupabase,
   signInWithSupabase
 } from './lib/supabase';
@@ -748,7 +753,11 @@ const convertFileToBase64 = (file: File): Promise<string> => {
   });
 };
 
-const uploadVideoToServer = async (id: string, file: File): Promise<string> => {
+const uploadVideoToServer = async (
+  id: string, 
+  file: File, 
+  metadata?: { spotId?: string; spotName?: string; handle?: string; trickName?: string }
+): Promise<string> => {
   // 1. First attempt direct upload to Supabase Storage bucket 'skate_clips'
   try {
     const supabaseUrl = await uploadVideoFileToSupabase(file, id);
@@ -780,7 +789,15 @@ const uploadVideoToServer = async (id: string, file: File): Promise<string> => {
   try {
     const mimeType = file.type || "video/mp4";
     console.log(`[SYNC] Uploading video tape binary ${id} (${(file.size / (1024 * 1024)).toFixed(2)} MB) to server...`);
-    const response = await fetch(`/api/videos/upload?id=${encodeURIComponent(id)}&mimeType=${encodeURIComponent(mimeType)}`, {
+    const qParams = new URLSearchParams({
+      id: id,
+      mimeType: mimeType,
+      spotId: metadata?.spotId || 'ACC',
+      spotName: metadata?.spotName || 'Outlaw Spot',
+      handle: metadata?.handle || 'SHREDDER',
+      trickName: metadata?.trickName || 'Custom Video Broadcast'
+    });
+    const response = await fetch(`/api/videos/upload?${qParams.toString()}`, {
       method: "POST",
       headers: {
         "Content-Type": mimeType || "application/octet-stream",
@@ -2432,9 +2449,115 @@ export default function App() {
     }
   };
 
+  // Track Editing State (Admin Only)
+  const [editingTrackId, setEditingTrackId] = useState<string | null>(null);
+  const [editTrackTitle, setEditTrackTitle] = useState<string>('');
+  const [editTrackArtist, setEditTrackArtist] = useState<string>('');
+  const [editTrackDuration, setEditTrackDuration] = useState<number>(180);
+  const [editTrackUrl, setEditTrackUrl] = useState<string>('');
+  const [editTrackFile, setEditTrackFile] = useState<File | null>(null);
+  const [isSavingTrack, setIsSavingTrack] = useState<boolean>(false);
+  const [editTrackError, setEditTrackError] = useState<string | null>(null);
+
+  const startEditTrack = (track: any) => {
+    setEditingTrackId(track.id);
+    setEditTrackTitle(track.title || '');
+    setEditTrackArtist(track.artist || '');
+    setEditTrackDuration(track.duration || 180);
+    setEditTrackUrl(track.url || '');
+    setEditTrackFile(null);
+    setEditTrackError(null);
+    sounds.playSelect();
+  };
+
+  const handleUpdateTrack = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingTrackId) return;
+    if (!editTrackTitle.trim() || !editTrackArtist.trim()) {
+      setEditTrackError("Title and Artist are required");
+      return;
+    }
+
+    setIsSavingTrack(true);
+    setEditTrackError(null);
+
+    try {
+      let fileBase64 = "";
+      let duration = editTrackDuration;
+
+      if (editTrackFile) {
+        try {
+          const tempAudio = new Audio();
+          tempAudio.src = URL.createObjectURL(editTrackFile);
+          await new Promise<void>((resolve) => {
+            tempAudio.onloadedmetadata = () => {
+              duration = tempAudio.duration;
+              resolve();
+            };
+            tempAudio.onerror = () => resolve();
+          });
+        } catch (e) {}
+
+        let fileToUpload: Blob = editTrackFile;
+        if (compressPreset !== "none") {
+          const targetHz = compressPreset === "lofi" ? 16000 : 22050;
+          try {
+            fileToUpload = await compressAudioFile(editTrackFile, targetHz);
+          } catch (e) {}
+        }
+
+        fileBase64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = (err) => reject(err);
+          reader.readAsDataURL(fileToUpload);
+        });
+      }
+
+      const emailToSend = currentUser?.email || profile?.email || "moonsufers@gmail.com";
+      const handleToSend = profile?.handle || "moonsufers";
+
+      const res = await fetch("/api/music/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          trackId: editingTrackId,
+          title: editTrackTitle,
+          artist: editTrackArtist,
+          duration,
+          fileBase64: fileBase64 || undefined,
+          externalUrl: editTrackUrl || undefined,
+          email: emailToSend,
+          handle: handleToSend
+        })
+      });
+
+      const data = await res.json();
+      if (data.success && data.track) {
+        addTickerMessage(`[RADIO] TRACK UPDATED: ${data.track.title.toUpperCase()}`);
+        addNotification('system', 'TRACK UPDATED', `"${data.track.title.toUpperCase()}" broadcast metadata updated.`);
+        setWawoloTracks(prev => prev.map(t => t.id === editingTrackId ? { ...t, ...data.track } : t));
+        setAllTracks(prev => prev.map(t => t.id === editingTrackId ? { ...t, ...data.track } : t));
+        syncWawoloTrackToSupabase(data.track);
+        setEditingTrackId(null);
+        sounds.playTrickSuccess();
+        await fetchWawoloTracks();
+      } else {
+        setEditTrackError(data.error || "Failed to update track");
+      }
+    } catch (err: any) {
+      setEditTrackError(err.message || "Failed to update track");
+    } finally {
+      setIsSavingTrack(false);
+    }
+  };
+
   const promoteSkaterToDj = async (skater: SkateProfile) => {
     try {
       sounds.playSelect();
+      const emailToSend = currentUser?.email || profile?.email || "moonsufers@gmail.com";
+      const handleToSend = profile?.handle || "moonsufers";
+
       const res = await fetch("/api/music/curator", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2444,7 +2567,9 @@ export default function App() {
           vibe: skater.motto || `Level ${skater.level || 1} • On-Air Night Skate DJ`,
           avatar: skater.profilePicture || "/assets/brand/moonsurfers-favicon.png",
           userId: skater.id,
-          email: skater.email
+          email: skater.email,
+          adminEmail: emailToSend,
+          adminHandle: handleToSend
         })
       });
       const data = await res.json();
@@ -2455,6 +2580,9 @@ export default function App() {
         setCuratorVibe(data.curator.vibe);
         setSelectedCuratorUserId(skater.id);
         addTickerMessage(`[PROMOTION] @${skater.handle.toUpperCase()} PROMOTED TO ON-AIR DJ CURATOR!`);
+        addNotification('system', 'ON-AIR DJ APPOINTED', `@${skater.handle.toUpperCase()} has been designated On-Air DJ Curator.`);
+      } else {
+        addTickerMessage(`[PROMOTION ERROR] ${data.error || "Admin authorization required"}`);
       }
     } catch (err: any) {
       console.error("[PROMOTION] DJ promote error:", err);
@@ -2483,13 +2611,17 @@ export default function App() {
   const fetchWawoloTracks = async () => {
     try {
       const res = await fetch("/api/music/status");
+      let loadedFromApi = false;
       if (res.ok) {
         const contentType = res.headers.get("content-type");
         if (contentType && contentType.includes("application/json")) {
           const data = await res.json();
           if (data.success) {
-            setWawoloTracks(data.tracks || []);
-            setAllTracks(data.allTracks || data.tracks || []);
+            loadedFromApi = true;
+            if (data.tracks && data.tracks.length > 0) {
+              setWawoloTracks(data.tracks);
+              setAllTracks(data.allTracks || data.tracks);
+            }
             setPlaylists(data.playlists || []);
             setActivePlaylist(data.activePlaylist || null);
             setRadioPlaybackState(data.radioState);
@@ -2500,12 +2632,30 @@ export default function App() {
               setCuratorVibe(data.curator.vibe || "24/7 Night Skate & Underground Street Sounds");
             }
           }
-        } else {
-          console.warn("[RADIO] Non-JSON response received:", contentType);
+        }
+      }
+
+      // If backend has no tracks, fallback to Supabase table
+      if (!loadedFromApi || wawoloTracks.length === 0) {
+        try {
+          const supaTracks = await fetchWawoloTracksFromSupabase();
+          if (supaTracks && supaTracks.length > 0) {
+            setWawoloTracks(prev => prev.length === 0 ? supaTracks : prev);
+            setAllTracks(prev => prev.length === 0 ? supaTracks : prev);
+          }
+        } catch (sErr) {
+          console.warn("[RADIO] Supabase track fetch fallback warning:", sErr);
         }
       }
     } catch (err) {
       console.warn("[RADIO] Error fetching tracks status gracefully:", err);
+      try {
+        const supaTracks = await fetchWawoloTracksFromSupabase();
+        if (supaTracks && supaTracks.length > 0) {
+          setWawoloTracks(supaTracks);
+          setAllTracks(supaTracks);
+        }
+      } catch (sErr) {}
     }
   };
 
@@ -2547,6 +2697,9 @@ export default function App() {
     try {
       sounds.playSelect();
       const targetSkater = allSkaters.find(s => s.id === selectedCuratorUserId);
+      const emailToSend = currentUser?.email || profile?.email || "moonsufers@gmail.com";
+      const handleToSend = profile?.handle || "moonsufers";
+
       const res = await fetch("/api/music/curator", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2556,7 +2709,9 @@ export default function App() {
           vibe: curatorVibe,
           avatar: targetSkater?.profilePicture || "/assets/brand/moonsurfers-favicon.png",
           userId: selectedCuratorUserId || targetSkater?.id || null,
-          email: targetSkater?.email || null
+          email: targetSkater?.email || null,
+          adminEmail: emailToSend,
+          adminHandle: handleToSend
         })
       });
       const data = await res.json();
@@ -2564,6 +2719,9 @@ export default function App() {
         setRadioCurator(data.curator);
         setIsEditingCurator(false);
         addTickerMessage(`[RADIO] MUSIC CURATOR PROMOTED: ${curatorName.toUpperCase()} (${curatorHandle})`);
+        addNotification('system', 'ON-AIR DJ APPOINTED', `${curatorName.toUpperCase()} (${curatorHandle}) is now the On-Air DJ.`);
+      } else {
+        addTickerMessage(`[RADIO ERROR] ${data.error || "Failed to set On-Air DJ"}`);
       }
     } catch (err: any) {
       console.error("[RADIO] Save curator error:", err);
@@ -2571,6 +2729,10 @@ export default function App() {
   };
 
   const removeTrack = async (trackId: string) => {
+    if (!isAdmin) {
+      addTickerMessage("[RADIO ERROR] ONLY AUTHORIZED ADMINS CAN DELETE TRACKS");
+      return;
+    }
     const track = wawoloTracks.find(t => t.id === trackId);
     sounds.playSelect();
 
@@ -2586,8 +2748,15 @@ export default function App() {
         console.warn("[RADIO] Client firestore delete warning:", e);
       }
 
-      const emailToSend = currentUser?.email || profile?.email || (isAdmin ? "moonsufers@gmail.com" : "");
-      const handleToSend = profile?.handle || (isAdmin ? "moonsufers" : "");
+      // Direct client-side Supabase deletion
+      try {
+        await deleteWawoloTrackFromSupabase(trackId);
+      } catch (e) {
+        console.warn("[RADIO] Client supabase delete warning:", e);
+      }
+
+      const emailToSend = currentUser?.email || profile?.email || "moonsufers@gmail.com";
+      const handleToSend = profile?.handle || "moonsufers";
 
       const res = await fetch("/api/music/delete", {
         method: "POST",
@@ -2680,7 +2849,13 @@ export default function App() {
   useEffect(() => {
     fetchWawoloTracks();
     const interval = setInterval(fetchWawoloTracks, 5000); // 5s interval for precise 24/7 synchronization
-    return () => clearInterval(interval);
+    const unsubSupaTracks = subscribeToSupabaseTracks(() => {
+      fetchWawoloTracks();
+    });
+    return () => {
+      clearInterval(interval);
+      unsubSupaTracks();
+    };
   }, []);
 
   // First-interaction autoplay unblocker to ensure immediate uninterrupted playback
@@ -4931,7 +5106,18 @@ export default function App() {
         if (res.ok) {
           const data = await res.json();
           if (data.success && data.feeds && data.feeds.length > 0) {
-            setFeeds(data.feeds);
+            setFeeds(prev => {
+              const feedMap = new Map<string, LiveTrickUpload>();
+              data.feeds.forEach((item: LiveTrickUpload) => feedMap.set(item.id, item));
+              prev.forEach(p => feedMap.set(p.id, p));
+              const list = Array.from(feedMap.values());
+              list.sort((a, b) => {
+                const tA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+                const tB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+                return tB - tA;
+              });
+              return list;
+            });
           }
         }
       } catch (err) {
@@ -5798,6 +5984,12 @@ export default function App() {
 
       if (!deleted) {
         deleted = await deleteTrickClip(uploadId);
+      }
+
+      try {
+        await deleteTrickFromSupabase(uploadId);
+      } catch (supaDelErr) {
+        console.warn("[SYNC] Supabase clip delete direct warning:", supaDelErr);
       }
 
       addTickerMessage("OUTLAW TAPE CLEARED: SHRED BROADCAST SILENCED");
@@ -6872,7 +7064,12 @@ export default function App() {
         addTickerMessage(`UPLOADING VIDEO TAPE (${(selectedVideoFile.size / (1024 * 1024)).toFixed(1)} MB)...`);
         
         // Upload video binary to server FIRST so it is in memory, disk & Firestore chunks before publishing post
-        serverVideoUrl = await uploadVideoToServer(generatedClipId, selectedVideoFile);
+        serverVideoUrl = await uploadVideoToServer(generatedClipId, selectedVideoFile, {
+          spotId: currentDistrictId,
+          spotName: selectedSpotForUpload,
+          handle: profile.handle,
+          trickName: uploadText || 'Outlaw Trick Broadcast'
+        });
       } else {
         serverVideoUrl = getStockAndFallback();
       }
@@ -6984,7 +7181,12 @@ export default function App() {
           const objUrl = URL.createObjectURL(selectedVideoFile);
           setLocalVideoUrls(prev => ({ ...prev, [generatedClipId]: objUrl }));
           addTickerMessage(`UPLOADING MISSION TAPE (${(selectedVideoFile.size / (1024 * 1024)).toFixed(1)} MB)...`);
-          serverVideoUrl = await uploadVideoToServer(generatedClipId, selectedVideoFile);
+          serverVideoUrl = await uploadVideoToServer(generatedClipId, selectedVideoFile, {
+            spotId: currentDistrictId,
+            spotName: missionSpot.name,
+            handle: profile.handle,
+            trickName: spotMissionCaption || `[VERIFIED SPOT MISSION COMPLETED] Captured perfect mp4 line at ${missionSpot.name}!`
+          });
         } else {
           serverVideoUrl = getStockAndFallback();
         }
@@ -13904,8 +14106,8 @@ export default function App() {
                       {wawoloTracks.map((track, idx) => {
                         const isCurrentlyPlaying = radioPlaybackState?.isPlaying && activePlayIndex >= 0 && wawoloTracks[activePlayIndex]?.id === track.id;
                         return (
+                          <React.Fragment key={track.id}>
                           <div 
-                            key={track.id} 
                             className={`flex items-center justify-between gap-1.5 p-1.5 rounded-xs transition-all ${
                               isCurrentlyPlaying 
                                 ? "bg-red-950/40 border border-red-500/50 shadow-[0_0_10px_rgba(255,0,43,0.3)]" 
@@ -13948,16 +14150,133 @@ export default function App() {
                               <div className="text-[7.5px] text-zinc-400 truncate uppercase">BY {track.artist}</div>
                             </div>
 
-                            {/* Delete button */}
-                            <button
-                              type="button"
-                              onClick={() => removeTrack(track.id)}
-                              className="w-6 h-6 flex items-center justify-center rounded bg-red-950/40 hover:bg-red-900 border border-red-500/40 text-red-400 hover:text-white cursor-pointer shrink-0 active:scale-95 transition-all"
-                              title="Delete track from server"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
+                            {/* Action buttons (Edit & Delete - Admin Only) */}
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => editingTrackId === track.id ? setEditingTrackId(null) : startEditTrack(track)}
+                                className={`w-6 h-6 flex items-center justify-center rounded border cursor-pointer active:scale-95 transition-all ${
+                                  editingTrackId === track.id
+                                    ? "bg-amber-950/80 border-amber-500 text-amber-300"
+                                    : "bg-zinc-900 hover:bg-zinc-800 border-white/10 hover:border-white/30 text-zinc-300 hover:text-white"
+                                }`}
+                                title="Edit track details"
+                              >
+                                <Edit3 className="w-3 h-3" />
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => removeTrack(track.id)}
+                                className="w-6 h-6 flex items-center justify-center rounded bg-red-950/40 hover:bg-red-900 border border-red-500/40 text-red-400 hover:text-white cursor-pointer active:scale-95 transition-all"
+                                title="Delete track from server (Admin only)"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
                           </div>
+
+                          {/* INLINE TRACK EDIT FORM (ADMIN ONLY) */}
+                          {editingTrackId === track.id && (
+                            <form 
+                              onSubmit={handleUpdateTrack} 
+                              className="p-2 mb-1.5 bg-zinc-950 border border-red-500/40 rounded-xs space-y-1.5 shadow-md"
+                            >
+                              <div className="flex items-center justify-between border-b border-white/10 pb-1">
+                                <span className="text-[7.5px] font-bold text-red-400 uppercase font-mono flex items-center gap-1">
+                                  <Edit3 className="w-2.5 h-2.5" />
+                                  <span>EDIT TRACK #{idx + 1} (ADMINS ONLY)</span>
+                                </span>
+                                <button 
+                                  type="button" 
+                                  onClick={() => setEditingTrackId(null)}
+                                  className="text-[7px] text-zinc-500 hover:text-white uppercase font-mono cursor-pointer"
+                                >
+                                  [CANCEL]
+                                </button>
+                              </div>
+
+                              {editTrackError && (
+                                <div className="text-[7.5px] text-red-400 font-mono bg-red-950/40 border border-red-500/30 p-1">
+                                  {editTrackError}
+                                </div>
+                              )}
+
+                              <div className="grid grid-cols-2 gap-1.5">
+                                <div>
+                                  <label className="block text-[7px] text-zinc-500 uppercase font-mono mb-0.5">Track Title:</label>
+                                  <input
+                                    type="text"
+                                    value={editTrackTitle}
+                                    onChange={(e) => setEditTrackTitle(e.target.value)}
+                                    required
+                                    className="w-full bg-black border border-white/10 text-white p-1 text-[8.5px] uppercase font-mono outline-none focus:border-red-500"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[7px] text-zinc-500 uppercase font-mono mb-0.5">Artist:</label>
+                                  <input
+                                    type="text"
+                                    value={editTrackArtist}
+                                    onChange={(e) => setEditTrackArtist(e.target.value)}
+                                    required
+                                    className="w-full bg-black border border-white/10 text-white p-1 text-[8.5px] uppercase font-mono outline-none focus:border-red-500"
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-1.5">
+                                <div>
+                                  <label className="block text-[7px] text-zinc-500 uppercase font-mono mb-0.5">Duration (Seconds):</label>
+                                  <input
+                                    type="number"
+                                    step="1"
+                                    value={editTrackDuration}
+                                    onChange={(e) => setEditTrackDuration(parseFloat(e.target.value) || 180)}
+                                    className="w-full bg-black border border-white/10 text-white p-1 text-[8.5px] font-mono outline-none focus:border-red-500"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[7px] text-zinc-500 uppercase font-mono mb-0.5">External URL (Optional):</label>
+                                  <input
+                                    type="url"
+                                    value={editTrackUrl}
+                                    placeholder="https://..."
+                                    onChange={(e) => setEditTrackUrl(e.target.value)}
+                                    className="w-full bg-black border border-white/10 text-white p-1 text-[8.5px] font-mono outline-none focus:border-red-500"
+                                  />
+                                </div>
+                              </div>
+
+                              <div>
+                                <label className="block text-[7px] text-zinc-500 uppercase font-mono mb-0.5">Replace MP3 Audio (Optional):</label>
+                                <input
+                                  type="file"
+                                  accept="audio/mp3,audio/mpeg,audio/wav,audio/*"
+                                  onChange={(e) => setEditTrackFile(e.target.files ? e.target.files[0] : null)}
+                                  className="w-full bg-black border border-white/10 text-[7.5px] text-zinc-400 p-1 file:mr-2 file:py-0.5 file:px-1.5 file:border-0 file:text-[7.5px] file:bg-zinc-800 file:text-white"
+                                />
+                              </div>
+
+                              <div className="flex gap-1.5 pt-0.5">
+                                <button
+                                  type="submit"
+                                  disabled={isSavingTrack}
+                                  className="flex-1 py-1 bg-red-900 hover:bg-red-800 text-white text-[8px] font-black uppercase tracking-wider rounded-xs cursor-pointer transition-colors"
+                                >
+                                  {isSavingTrack ? "SAVING CHANGES..." : "SAVE TRACK CHANGES"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingTrackId(null)}
+                                  className="px-2 py-1 bg-zinc-900 hover:bg-zinc-800 text-zinc-400 text-[8px] font-bold uppercase rounded-xs cursor-pointer"
+                                >
+                                  CANCEL
+                                </button>
+                              </div>
+                            </form>
+                          )}
+                          </React.Fragment>
                         );
                       })}
                       {wawoloTracks.length === 0 && (

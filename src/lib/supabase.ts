@@ -507,13 +507,70 @@ export async function syncWawoloTrackToSupabase(track: any) {
       title: track.title || 'Untitled Track',
       artist: track.artist || 'Unknown Artist',
       url: track.url || '',
-      duration: track.duration || 180,
-      order_index: track.orderIndex || 0,
+      duration: track.duration ? parseFloat(track.duration) : 180,
+      order_index: typeof track.orderIndex === 'number' ? track.orderIndex : 0,
       uploaded_by: track.uploadedBy || 'admin',
       is_uploaded: track.isUploaded !== false,
       created_at: track.uploadedAt || track.createdAt || new Date().toISOString()
     }, { onConflict: 'id' });
+    console.log(`[SUPABASE SYNC] Track ${track.id} synced to Supabase.`);
   } catch (err) {
     console.warn('[SUPABASE SYNC] Music sync info:', err);
+  }
+}
+
+export async function deleteWawoloTrackFromSupabase(trackId: string) {
+  if (!trackId || !supabase) return;
+  try {
+    await supabase.from('wawoloradio_tracks').delete().eq('id', trackId);
+    console.log(`[SUPABASE SYNC] Track ${trackId} deleted from Supabase.`);
+  } catch (err) {
+    console.warn('[SUPABASE SYNC] Music delete info:', err);
+  }
+}
+
+export async function fetchWawoloTracksFromSupabase() {
+  if (!supabase) return [];
+  try {
+    const { data, error } = await supabase
+      .from('wawoloradio_tracks')
+      .select('*')
+      .order('order_index', { ascending: true });
+    if (error) {
+      console.warn('[SUPABASE FETCH] Track fetch note:', error);
+      return [];
+    }
+    return (data || []).map((row: any) => ({
+      id: row.id,
+      title: row.title,
+      artist: row.artist,
+      url: row.url,
+      duration: row.duration ? parseFloat(row.duration) : 180,
+      orderIndex: row.order_index !== undefined ? row.order_index : 0,
+      uploadedBy: row.uploaded_by || 'admin',
+      isUploaded: row.is_uploaded !== false,
+      uploadedAt: row.created_at
+    }));
+  } catch (err) {
+    console.warn('[SUPABASE FETCH] Exception fetching tracks:', err);
+    return [];
+  }
+}
+
+export function subscribeToSupabaseTracks(onTracksChange: () => void) {
+  if (!supabase) return () => {};
+  try {
+    const channel = supabase
+      .channel('public_wawoloradio_tracks_feed')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'wawoloradio_tracks' }, () => {
+        onTracksChange();
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  } catch (e) {
+    console.warn('[SUPABASE REALTIME] Music subscription error:', e);
+    return () => {};
   }
 }

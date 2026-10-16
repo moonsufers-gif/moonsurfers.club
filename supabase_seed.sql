@@ -9,7 +9,7 @@ create extension if not exists "uuid-ossp";
 -- USERS TABLE
 create table if not exists users (
   id text primary key,
-  handle text unique,
+  handle text,
   email text,
   name text,
   avatar text,
@@ -22,6 +22,8 @@ create table if not exists users (
   raw_data jsonb,
   updated_at timestamptz default now()
 );
+alter table users drop constraint if exists users_handle_key;
+create index if not exists idx_users_handle on users (handle);
 
 -- CUSTOM SPOTS TABLE
 create table if not exists custom_spots (
@@ -160,6 +162,37 @@ end $$;
 do $$
 begin
   alter publication supabase_realtime add table direct_messages;
+exception when others then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table wawoloradio_tracks;
+exception when others then null;
+end $$;
+
+-- ========================================================
+-- STORAGE BUCKETS (skate_clips & wawolo_music)
+-- ========================================================
+do $$
+begin
+  insert into storage.buckets (id, name, public) 
+  values ('skate_clips', 'skate_clips', true)
+  on conflict (id) do update set public = true;
+
+  insert into storage.buckets (id, name, public) 
+  values ('wawolo_music', 'wawolo_music', true)
+  on conflict (id) do update set public = true;
+exception when others then null;
+end $$;
+
+do $$
+begin
+  drop policy if exists "Allow public access to skate_clips" on storage.objects;
+  create policy "Allow public access to skate_clips" on storage.objects for all using (bucket_id = 'skate_clips') with check (bucket_id = 'skate_clips');
+
+  drop policy if exists "Allow public access to wawolo_music" on storage.objects;
+  create policy "Allow public access to wawolo_music" on storage.objects for all using (bucket_id = 'wawolo_music') with check (bucket_id = 'wawolo_music');
 exception when others then null;
 end $$;
 
