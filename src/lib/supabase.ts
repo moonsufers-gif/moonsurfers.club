@@ -574,3 +574,39 @@ export function subscribeToSupabaseTracks(onTracksChange: () => void) {
     return () => {};
   }
 }
+
+// ========================================================
+// WAWOLO MUSIC STORAGE UPLOAD (Supabase Storage Bucket: wawolo_music)
+// ========================================================
+export async function uploadMusicFileToSupabase(file: File | Blob, trackId: string): Promise<string | null> {
+  if (!supabase || !file) return null;
+  try {
+    const ext = (file as any).name ? (file as any).name.split('.').pop() : 'mp3';
+    const filePath = `tracks/${trackId}_${Date.now()}.${ext || 'mp3'}`;
+    
+    const { data, error } = await supabase.storage
+      .from('wawolo_music')
+      .upload(filePath, file, {
+        cacheControl: '3600',
+        upsert: true,
+        contentType: (file as any).type || 'audio/mpeg'
+      });
+
+    if (error) {
+      console.warn('[SUPABASE MUSIC STORAGE] Upload notice (server fallback active):', error.message);
+      return null;
+    }
+
+    const { data: publicUrlData } = supabase.storage
+      .from('wawolo_music')
+      .getPublicUrl(data.path);
+
+    if (publicUrlData?.publicUrl) {
+      console.log('[SUPABASE MUSIC STORAGE] Track uploaded to Supabase bucket:', publicUrlData.publicUrl);
+      return publicUrlData.publicUrl;
+    }
+  } catch (err) {
+    console.warn('[SUPABASE MUSIC STORAGE] Track upload notice:', err);
+  }
+  return null;
+}

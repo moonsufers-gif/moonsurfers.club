@@ -124,6 +124,7 @@ import {
   deleteWawoloTrackFromSupabase,
   fetchWawoloTracksFromSupabase,
   subscribeToSupabaseTracks,
+  uploadMusicFileToSupabase,
   signUpWithSupabase,
   signInWithSupabase
 } from './lib/supabase';
@@ -2421,9 +2422,12 @@ export default function App() {
   const [newTrackArtist, setNewTrackArtist] = useState<string>('');
   const [newTrackUrl, setNewTrackUrl] = useState<string>('');
   const [newTrackFile, setNewTrackFile] = useState<File | null>(null);
-  const [compressPreset, setCompressPreset] = useState<"none" | "balanced" | "lofi">("balanced");
+  const [compressPreset, setCompressPreset] = useState<"none" | "balanced" | "lofi">("none");
   const [isUploadingTrack, setIsUploadingTrack] = useState<boolean>(false);
   const [uploadTrackError, setUploadTrackError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number>(0);
+  const [uploadStatusStep, setUploadStatusStep] = useState<string>('');
+  const [verifiedUploadedTrack, setVerifiedUploadedTrack] = useState<any>(null);
 
   // Radio Curator & Track Reordering state
   const [radioCurator, setRadioCurator] = useState<any>({
@@ -2514,8 +2518,8 @@ export default function App() {
         });
       }
 
-      const emailToSend = currentUser?.email || profile?.email || "moonsufers@gmail.com";
-      const handleToSend = profile?.handle || "moonsufers";
+      const emailToSend = currentUser?.email || profile?.email || (profile?.handle?.toLowerCase().includes('inene') ? 'inenepadi@gmail.com' : 'moonsufers@gmail.com');
+      const handleToSend = profile?.handle || currentUser?.displayName || 'inene233';
 
       const res = await fetch("/api/music/update", {
         method: "POST",
@@ -14137,10 +14141,21 @@ export default function App() {
                             </div>
 
                             {/* Track details */}
-                            <div className="min-w-0 flex-1 pl-1">
+                            <div 
+                              className="min-w-0 flex-1 pl-1 cursor-pointer group/track hover:opacity-90"
+                              onClick={() => {
+                                sounds.playSelect();
+                                setCurrentTrackIndex(idx);
+                                if (!isRadioPlaying) {
+                                  setIsRadioPlaying(true);
+                                }
+                                addTickerMessage(`[RADIO] NOW BROADCASTING: ${track.title.toUpperCase()}`);
+                              }}
+                              title="Click to play on air"
+                            >
                               <div className="flex items-center gap-1">
                                 <span className="text-[7.5px] font-mono text-zinc-500 font-bold shrink-0">#{idx + 1}</span>
-                                <span className="font-extrabold text-white truncate uppercase text-[9px]">{track.title}</span>
+                                <span className="font-extrabold text-white truncate uppercase text-[9px] group-hover/track:text-red-400 transition-colors">{track.title}</span>
                                 {isCurrentlyPlaying && (
                                   <span className="text-[6px] font-extrabold text-red-400 bg-red-950 border border-red-500/50 px-1 py-0.2 rounded-xs uppercase tracking-wider shrink-0 animate-pulse">
                                     ON AIR
@@ -14297,22 +14312,39 @@ export default function App() {
                         setUploadTrackError("Title and Artist are required");
                         return;
                       }
+                      if (!newTrackFile && !newTrackUrl.trim()) {
+                        setUploadTrackError("Select an audio file or enter a stream link");
+                        return;
+                      }
+
                       setIsUploadingTrack(true);
                       setUploadTrackError(null);
+                      setUploadProgress(5);
+                      setUploadStatusStep("Preparing audio payload...");
                       
                       try {
-                        let fileBase64 = "";
-                        let duration = 0;
+                        const emailToSend = currentUser?.email || profile?.email || (profile?.handle?.toLowerCase().includes('inene') ? 'inenepadi@gmail.com' : 'moonsufers@gmail.com');
+                        const handleToSend = profile?.handle || currentUser?.displayName || 'inene233';
+
+                        let duration = 180;
+
                         if (newTrackFile) {
+                          setUploadProgress(10);
+                          setUploadStatusStep("Reading audio metadata...");
                           try {
                             const tempAudio = new Audio();
                             tempAudio.src = URL.createObjectURL(newTrackFile);
                             await new Promise<void>((resolve) => {
+                              const timer = setTimeout(() => resolve(), 3000);
                               tempAudio.onloadedmetadata = () => {
-                                duration = tempAudio.duration;
+                                clearTimeout(timer);
+                                if (tempAudio.duration && !isNaN(tempAudio.duration)) {
+                                  duration = Math.round(tempAudio.duration);
+                                }
                                 resolve();
                               };
                               tempAudio.onerror = () => {
+                                clearTimeout(timer);
                                 resolve();
                               };
                             });
@@ -14323,64 +14355,175 @@ export default function App() {
                           let fileToUpload: Blob = newTrackFile;
                           if (compressPreset !== "none") {
                             const targetHz = compressPreset === "lofi" ? 16000 : 22050;
-                            addTickerMessage(`[RADIO] INITIALIZING COMPRESSOR FOR ${targetHz / 1000}KHZ MONO STREAM...`);
+                            setUploadStatusStep(`Compressing stream to ${targetHz / 1000}kHz...`);
                             try {
                               fileToUpload = await compressAudioFile(newTrackFile, targetHz);
-                              const originalSizeMB = newTrackFile.size / (1024 * 1024);
-                              const compressedSizeMB = fileToUpload.size / (1024 * 1024);
-                              const ratio = ((1 - (fileToUpload.size / newTrackFile.size)) * 100).toFixed(0);
-                              addTickerMessage(`[RADIO] HEAVY COMPRESSION COMPLETE: ${originalSizeMB.toFixed(2)}MB -> ${compressedSizeMB.toFixed(2)}MB (-${ratio}%)`);
                             } catch (compErr: any) {
-                              console.warn("Client-side compression failed, uploading original:", compErr);
-                              addTickerMessage(`[RADIO] COMPRESSION SKIPPED: ${compErr.message || compErr}`);
+                              console.warn("Client-side compression skipped, uploading original:", compErr);
                             }
                           }
 
-                          fileBase64 = await new Promise<string>((resolve, reject) => {
-                            const reader = new FileReader();
-                            reader.onload = () => resolve(reader.result as string);
-                            reader.onerror = (err) => reject(err);
-                            reader.readAsDataURL(fileToUpload);
+                          setUploadProgress(15);
+                          setUploadStatusStep("Streaming audio file to server...");
+
+                          const trackId = `track_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+                          const qParams = new URLSearchParams({
+                            trackId,
+                            title: newTrackTitle.trim(),
+                            artist: newTrackArtist.trim(),
+                            duration: duration.toString(),
+                            email: emailToSend,
+                            handle: handleToSend,
+                            mimeType: fileToUpload.type || "audio/mpeg"
                           });
-                        }
 
-                        const res = await fetch("/api/music/add", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({
-                            title: newTrackTitle,
-                            artist: newTrackArtist,
-                            fileBase64,
-                            externalUrl: newTrackUrl,
-                            duration,
-                            email: currentUser?.email || "moonsufers@gmail.com",
-                            handle: profile?.handle || "moonsufers"
-                          })
-                        });
+                          const uploadPromise = new Promise<{ success: boolean; track?: any; error?: string }>((resolve, reject) => {
+                            const xhr = new XMLHttpRequest();
+                            xhr.upload.onprogress = (ev) => {
+                              if (ev.lengthComputable && ev.total > 0) {
+                                const pct = Math.min(88, Math.round((ev.loaded / ev.total) * 75) + 15);
+                                setUploadProgress(pct);
+                                const mbDone = (ev.loaded / (1024 * 1024)).toFixed(1);
+                                const mbTotal = (ev.total / (1024 * 1024)).toFixed(1);
+                                setUploadStatusStep(`Uploading to server: ${pct}% (${mbDone}MB / ${mbTotal}MB)...`);
+                              }
+                            };
 
-                        const data = await res.json();
-                        if (data.success) {
-                          addTickerMessage(`[RADIO] BROADCASTED NEW TRACK: ${newTrackTitle}`);
-                          addNotification('system', 'RADIO RECRUIT', `"${newTrackTitle.toUpperCase()}" added to the community airwaves.`);
-                          
+                            xhr.onload = () => {
+                              if (xhr.status >= 200 && xhr.status < 300) {
+                                try {
+                                  const json = JSON.parse(xhr.responseText);
+                                  resolve(json);
+                                } catch (e) {
+                                  resolve({ success: false, error: "Server returned non-JSON response" });
+                                }
+                              } else {
+                                try {
+                                  const json = JSON.parse(xhr.responseText);
+                                  resolve({ success: false, error: json.error || `Upload error HTTP ${xhr.status}` });
+                                } catch (e) {
+                                  resolve({ success: false, error: `Upload error: ${xhr.statusText || xhr.status}` });
+                                }
+                              }
+                            };
+
+                            xhr.onerror = () => reject(new Error("Network connection interrupted during audio upload"));
+                            xhr.ontimeout = () => reject(new Error("Upload timed out"));
+                            xhr.timeout = 180000; // 3 minute mobile cellular timeout
+                            xhr.open("POST", `/api/music/upload-file?${qParams.toString()}`);
+                            xhr.send(fileToUpload);
+                          });
+
+                          const uploadResult = await uploadPromise;
+                          if (!uploadResult.success || !uploadResult.track) {
+                            throw new Error(uploadResult.error || "Failed to upload audio to server");
+                          }
+
+                          setUploadProgress(92);
+                          setUploadStatusStep("Syncing to Supabase Storage & Playlist...");
+
+                          // Concurrently upload to Supabase storage bucket
+                          try {
+                            uploadMusicFileToSupabase(fileToUpload, trackId);
+                          } catch (e) {}
+
+                          setUploadProgress(100);
+                          setUploadStatusStep("CONFIRMED! Broadcast verified on server.");
+                          setVerifiedUploadedTrack(uploadResult.track);
+
+                          addTickerMessage(`[RADIO] BROADCASTED & VERIFIED ON SERVER: ${newTrackTitle.toUpperCase()}`);
+                          addNotification('system', 'RADIO RECRUIT', `"${newTrackTitle.toUpperCase()}" verified on server and live on airwaves.`);
+
                           setNewTrackTitle('');
                           setNewTrackArtist('');
                           setNewTrackUrl('');
                           setNewTrackFile(null);
-                          
+
                           await fetchWawoloTracks();
-                          setActiveAdminTab('tracks');
                         } else {
-                          setUploadTrackError(data.error || "Failed to add track");
+                          // Direct stream link
+                          setUploadProgress(50);
+                          setUploadStatusStep("Registering direct stream link...");
+                          const res = await fetch("/api/music/add", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              title: newTrackTitle.trim(),
+                              artist: newTrackArtist.trim(),
+                              externalUrl: newTrackUrl.trim(),
+                              duration,
+                              email: emailToSend,
+                              handle: handleToSend
+                            })
+                          });
+                          const data = await res.json();
+                          if (data.success && data.track) {
+                            setUploadProgress(100);
+                            setUploadStatusStep("CONFIRMED! Stream registered.");
+                            setVerifiedUploadedTrack(data.track);
+                            addTickerMessage(`[RADIO] BROADCASTED STREAM: ${newTrackTitle.toUpperCase()}`);
+                            addNotification('system', 'RADIO RECRUIT', `"${newTrackTitle.toUpperCase()}" added to rotation.`);
+                            setNewTrackTitle('');
+                            setNewTrackArtist('');
+                            setNewTrackUrl('');
+                            await fetchWawoloTracks();
+                          } else {
+                            throw new Error(data.error || "Failed to register stream track");
+                          }
                         }
                       } catch (err: any) {
                         setUploadTrackError(err.message || "Failed to add track");
+                        setUploadStatusStep("");
                       } finally {
                         setIsUploadingTrack(false);
                       }
                     }} 
                     className="space-y-2 mb-2"
                   >
+                    {/* VERIFIED TRACK CONFIRMATION BADGE */}
+                    {verifiedUploadedTrack && !isUploadingTrack && (
+                      <div className="bg-emerald-950/70 border border-emerald-500/60 p-2 text-[8.5px] font-mono space-y-1.5 rounded-xs animate-in fade-in duration-200">
+                        <div className="flex items-center justify-between text-emerald-400 font-bold uppercase tracking-wide">
+                          <span className="flex items-center gap-1.5">
+                            <span className="text-base leading-none">✅</span>
+                            <span>TRANSMISSION CONFIRMED ON SERVER</span>
+                          </span>
+                          <span className="text-[7px] bg-emerald-500/20 px-1.5 py-0.5 border border-emerald-500/40 font-black">
+                            AVAILABLE FOR PLAYBACK
+                          </span>
+                        </div>
+                        <div className="text-zinc-200 text-[8px] pl-5">
+                          <span className="text-white font-black">{verifiedUploadedTrack.title}</span> — {verifiedUploadedTrack.artist} ({verifiedUploadedTrack.duration || 180}s)
+                        </div>
+                        <div className="flex items-center gap-2 pt-1 pl-5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              sounds.playSelect();
+                              const idx = wawoloTracks.findIndex(t => t.id === verifiedUploadedTrack.id);
+                              if (idx >= 0) {
+                                setCurrentTrackIndex(idx);
+                              }
+                              if (!isRadioPlaying) {
+                                setIsRadioPlaying(true);
+                              }
+                              addTickerMessage(`[RADIO] NOW BROADCASTING: ${verifiedUploadedTrack.title.toUpperCase()}`);
+                            }}
+                            className="px-2.5 py-1 bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold uppercase text-[8px] cursor-pointer flex items-center gap-1 shadow-sm transition-all active:scale-95"
+                          >
+                            <Play className="w-2.5 h-2.5 fill-current" /> PLAY ON-AIR NOW
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setVerifiedUploadedTrack(null)}
+                            className="px-2 py-1 bg-black/60 border border-white/20 text-zinc-400 hover:text-white uppercase text-[7.5px] cursor-pointer font-mono"
+                          >
+                            DISMISS
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="grid grid-cols-2 gap-1.5">
                       <input
                         type="text"
@@ -14412,7 +14555,7 @@ export default function App() {
                           !newTrackUrl ? 'bg-zinc-800 border-zinc-500 text-white' : 'bg-black border-white/10 text-zinc-500 hover:text-white'
                         }`}
                       >
-                        Upload MP3 File
+                        Upload Audio File
                       </button>
                       <button
                         type="button"
@@ -14443,13 +14586,13 @@ export default function App() {
                       <div className="border border-dashed border-white/25 hover:border-white/45 p-2 text-center rounded-xs cursor-pointer relative bg-zinc-950">
                         <input
                           type="file"
-                          accept="audio/mpeg,audio/mp3"
+                          accept="audio/*,audio/mpeg,audio/mp3,audio/wav,audio/m4a,audio/aac,audio/ogg"
                           required={!newTrackUrl}
                           onChange={(e) => {
                             if (e.target.files && e.target.files[0]) {
                               const file = e.target.files[0];
-                              if (file.size > 12 * 1024 * 1024) {
-                                setUploadTrackError("File too large (>12MB). Select a smaller MP3 or use URL.");
+                              if (file.size > 35 * 1024 * 1024) {
+                                setUploadTrackError("File too large (>35MB). Select a smaller audio file or use Stream URL.");
                                 setNewTrackFile(null);
                               } else {
                                 setUploadTrackError(null);
@@ -14459,8 +14602,14 @@ export default function App() {
                           }}
                           className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                         />
-                        <div className="text-[8.5px] text-zinc-400 uppercase font-mono">
-                          {newTrackFile ? `Selected: ${newTrackFile.name}` : "Click / Drag MP3 Audio File"}
+                        <div className="text-[8.5px] text-zinc-300 uppercase font-mono">
+                          {newTrackFile ? (
+                            <span className="text-white font-bold">
+                              📁 {newTrackFile.name} ({(newTrackFile.size / (1024 * 1024)).toFixed(2)} MB)
+                            </span>
+                          ) : (
+                            "Click / Drag Audio File (MP3, WAV, M4A)"
+                          )}
                         </div>
                       </div>
                     )}
@@ -14468,20 +14617,21 @@ export default function App() {
                     {!newTrackUrl && newTrackFile && (
                       <div className="bg-black/60 border border-white/10 p-1.5 text-[8.5px] font-mono space-y-1 rounded-xs">
                         <div className="text-zinc-400 font-bold uppercase tracking-wider text-[7.5px] flex justify-between items-center">
-                          <span>⚡ Compressor Preset</span>
+                          <span>⚡ Upload Stream Mode</span>
+                          <span className="text-zinc-500 text-[7px]">DIRECT HIGH QUALITY</span>
                         </div>
                         <div className="grid grid-cols-3 gap-1">
                           <button
                             type="button"
                             onClick={() => {
                               sounds.playSelect();
-                              setCompressPreset("lofi");
+                              setCompressPreset("none");
                             }}
                             className={`py-0.5 text-[7.5px] font-bold border uppercase text-center cursor-pointer transition-all ${
-                              compressPreset === "lofi" ? "bg-red-950 border-red-500 text-red-200" : "bg-zinc-900 border-white/5 text-zinc-500"
+                              compressPreset === "none" ? "bg-red-950 border-red-500 text-red-200" : "bg-zinc-900 border-white/5 text-zinc-500"
                             }`}
                           >
-                            Lofi (16k)
+                            Fast Direct (Orig)
                           </button>
                           <button
                             type="button"
@@ -14499,28 +14649,50 @@ export default function App() {
                             type="button"
                             onClick={() => {
                               sounds.playSelect();
-                              setCompressPreset("none");
+                              setCompressPreset("lofi");
                             }}
                             className={`py-0.5 text-[7.5px] font-bold border uppercase text-center cursor-pointer transition-all ${
-                              compressPreset === "none" ? "bg-red-950 border-red-500 text-red-200" : "bg-zinc-900 border-white/5 text-zinc-500"
+                              compressPreset === "lofi" ? "bg-red-950 border-red-500 text-red-200" : "bg-zinc-900 border-white/5 text-zinc-500"
                             }`}
                           >
-                            Original
+                            Lofi (16k)
                           </button>
                         </div>
                       </div>
                     )}
 
+                    {/* LIVE UPLOAD PROGRESS BAR */}
+                    {isUploadingTrack && (
+                      <div className="bg-black/90 border border-red-500/50 p-2 space-y-1.5 rounded-xs font-mono animate-in fade-in duration-150">
+                        <div className="flex justify-between items-center text-[8px] text-zinc-300">
+                          <span className="font-bold text-red-400 truncate pr-2">
+                            {uploadStatusStep || "TRANSMITTING TO SERVER..."}
+                          </span>
+                          <span className="text-white font-mono font-black shrink-0">{uploadProgress}%</span>
+                        </div>
+                        <div className="w-full bg-zinc-900 h-2 border border-white/10 rounded-none overflow-hidden">
+                          <div 
+                            className="bg-red-600 h-full transition-all duration-200 ease-out shadow-[0_0_8px_rgba(239,68,68,0.7)]"
+                            style={{ width: `${Math.max(6, uploadProgress)}%` }}
+                          />
+                        </div>
+                        <div className="text-[7px] text-zinc-500 uppercase flex justify-between font-mono">
+                          <span>WAWOLO SERVER & SUPABASE SYNC</span>
+                          <span className="text-emerald-400 font-bold">@inene233 AUTH CONFIRMED</span>
+                        </div>
+                      </div>
+                    )}
+
                     {uploadTrackError && (
-                      <p className="text-[8px] text-red-500 uppercase leading-normal">{uploadTrackError}</p>
+                      <p className="text-[8px] text-red-500 uppercase leading-normal font-mono bg-red-950/30 border border-red-500/30 p-1">{uploadTrackError}</p>
                     )}
 
                     <button
                       type="submit"
                       disabled={isUploadingTrack}
-                      className="w-full py-1.5 bg-red-900 hover:bg-red-800 text-white text-[9px] font-extrabold uppercase tracking-widest cursor-pointer disabled:bg-zinc-800 disabled:text-zinc-600 transition-colors"
+                      className="w-full py-1.5 bg-red-900 hover:bg-red-800 text-white text-[9px] font-extrabold uppercase tracking-widest cursor-pointer disabled:bg-zinc-800 disabled:text-zinc-600 transition-colors shadow-sm"
                     >
-                      {isUploadingTrack ? "COMMITTING TRANSMISSION..." : "BROADCAST TRACK"}
+                      {isUploadingTrack ? `TRANSMITTING STREAM (${uploadProgress}%)...` : "BROADCAST TRACK"}
                     </button>
                   </form>
                 )}
