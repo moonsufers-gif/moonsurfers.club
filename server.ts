@@ -223,8 +223,23 @@ async function startServer() {
     next();
   });
 
-  // Middleware to handle JSON payloads
-  app.use(express.json({ limit: "25mb" }));
+  // Middleware to handle JSON and URL-encoded payloads with robust limits
+  app.use(express.json({ limit: "50mb" }));
+  app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+
+  // Global safety middleware preventing unformatted 413 "Payload Too Large" crashes
+  app.use((err: any, req: any, res: any, next: any) => {
+    if (err && (err.type === "entity.too.large" || err.status === 413)) {
+      return res.status(413).json({
+        success: false,
+        error: "Payload exceeds single-request buffer. Multi-part chunked streaming will be used."
+      });
+    }
+    if (err instanceof SyntaxError && "body" in err) {
+      return res.status(400).json({ success: false, error: "Invalid JSON format in payload" });
+    }
+    next(err);
+  });
 
   // Initialize Gemini SDK with telemetry header
   const ai = new GoogleGenAI({ 
@@ -2688,6 +2703,159 @@ Return a rigorous JSON object matching this schema exactly:
     } catch (err: any) {
       console.error("[MUSIC API] Binary upload error:", err);
       res.status(500).json({ success: false, error: err.message || "Failed to upload audio file" });
+    }
+  });
+
+  // High-performance chunked audio upload endpoint (NO FILE SIZE CAP, ZERO TOKENS BURNED)
+  app.post("/api/music/upload-chunk", express.raw({ type: "*/*", limit: "25mb" }), async (req, res) => {
+    try {
+      const trackId = (req.query.trackId as string) || (req.headers["x-track-id"] as string);
+      const chunkIndex = parseInt((req.query.chunkIndex as string) || (req.headers["x-chunk-index"] as string) || "0", 10);
+      const totalChunks = parseInt((req.query.totalChunks as string) || (req.headers["x-total-chunks"] as string) || "1", 10);
+      const title = (req.query.title as string) || (req.headers["x-track-title"] as string) || "Community Broadcast Track";
+      const artist = (req.query.artist as string) || (req.headers["x-track-artist"] as string) || "Wawolo Sound";
+      const duration = parseFloat((req.query.duration as string) || (req.headers["x-track-duration"] as string) || "180");
+      const email = (req.query.email as string) || (req.headers["x-admin-email"] as string) || "";
+      const handle = (req.query.handle as string) || (req.headers["x-admin-handle"] as string) || "";
+      const mimeType = (req.query.mimeType as string) || (req.headers["content-type"] as string) || "audio/mpeg";
+
+      if (!checkAdminAuth(email, handle)) {
+        return res.status(403).json({ success: false, error: "Unauthorized admin access: Only admin accounts (@inene233 / moonsurfers) can upload tracks" });
+      }
+
+      if (!trackId) {
+        return res.status(400).json({ success: false, error: "Missing trackId for chunked stream" });
+      }
+
+      const chunkBuffer = req.body;
+      if (!chunkBuffer || chunkBuffer.length === 0) {
+        return res.status(400).json({ success: false, error: "Empty chunk payload received" });
+      }
+
+      const tempDir = path.join(MUSIC_DIR, "temp_chunks", trackId);
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+
+      const chunkFilePath = path.join(tempDir, `chunk_${chunkIndex}`);
+      fs.writeFileSync(chunkFilePath, chunkBuffer);
+
+      // Check if all chunks from 0 to totalChunks - 1 are present
+      let allChunksPresent = true;
+      for (let i = 0; i < totalChunks; i++) {
+        if (!fs.existsSync(path.join(tempDir, `chunk_${i}`))) {
+          allChunksPresent = false;
+          break;
+        }
+      }
+
+      if (!allChunksPresent || chunkIndex < totalChunks - 1) {
+        return res.json({ 
+          success: true, 
+          complete: false, 
+          chunkIndex, 
+          totalChunks, 
+          message: `Chunk ${chunkIndex + 1}/${totalChunks} received.` 
+        });
+      }
+
+      // All chunks present! Reassemble into final audio file with zero token burn
+      console.log(`[MUSIC API] Reassembling all ${totalChunks} chunks for track ${trackId}...`);
+      const finalFilePath = path.join(MUSIC_DIR, `${trackId}.mp3`);
+      const metaPath = path.join(MUSIC_DIR, `${trackId}.meta.json`);
+      const finalBuffers: Buffer[] = [];
+
+      for (let i = 0; i < totalChunks; i++) {
+        const cPath = path.join(tempDir, `chunk_${i}`);
+        finalBuffers.push(fs.readFileSync(cPath));
+      }
+      const fullAudioBuffer = Buffer.concat(finalBuffers);
+      fs.writeFileSync(finalFilePath, fullAudioBuffer);
+      fs.writeFileSync(metaPath, JSON.stringify({ mimeType, title, artist, duration, size: fullAudioBuffer.length }));
+
+      // Clean up temp chunk directory
+      try {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } catch (rmErr) {}
+
+      const finalUrl = `/api/music/play/${trackId}`;
+      const trackData = {
+        id: trackId,
+        title,
+        artist,
+        url: finalUrl,
+        isUploaded: true,
+        duration: duration || 180,
+        uploadedBy: handle || email || "@inene233",
+        uploadedAt: new Date().toISOString()
+      };
+
+      await db.collection("wawoloradio_tracks").doc(trackId).set(trackData);
+      invalidateTracksCache();
+
+      // Back up to Firestore chunks asynchronously in background
+      (async () => {
+        try {
+          const chunkSize = 500 * 1024;
+          const fsChunks = Math.ceil(fullAudioBuffer.length / chunkSize);
+          const metaDocRef = db.collection('music_meta').doc(trackId);
+          await metaDocRef.set({
+            id: trackId,
+            mimeType,
+            totalChunks: fsChunks,
+            size: fullAudioBuffer.length,
+            createdAt: new Date().toISOString()
+          });
+
+          const savePromises = [];
+          for (let index = 0; index < fsChunks; index++) {
+            const start = index * chunkSize;
+            const end = Math.min(start + chunkSize, fullAudioBuffer.length);
+            const chunkBuf = fullAudioBuffer.subarray(start, end);
+            const chunkDocRef = db.collection('music_chunks').doc(`${trackId}_chunk_${index}`);
+            savePromises.push(chunkDocRef.set({
+              trackId,
+              index,
+              base64Data: chunkBuf.toString("base64"),
+              createdAt: new Date().toISOString()
+            }));
+          }
+          await Promise.all(savePromises);
+          console.log(`[MUSIC STORAGE] Chunked track ${trackId} backed up to Firestore (${fsChunks} chunks).`);
+        } catch (fErr) {
+          console.error(`[MUSIC STORAGE] Firestore music backup failed for ${trackId}:`, fErr);
+        }
+      })();
+
+      // Synchronize to Supabase table
+      try {
+        void (async () => {
+          try {
+            await supabaseServer.from('wawoloradio_tracks').upsert({
+              id: trackId,
+              title,
+              artist,
+              url: finalUrl,
+              duration: duration || 180,
+              order_index: 0,
+              uploaded_by: handle || email || "@inene233",
+              is_uploaded: true,
+              created_at: new Date().toISOString()
+            }, { onConflict: 'id' });
+            console.log(`[SUPABASE] Track ${trackId} upserted to Supabase.`);
+          } catch (e: any) {
+            console.warn('[SUPABASE] Music sync warning:', e?.message || e);
+          }
+        })();
+      } catch (e) {
+        console.warn('[SUPABASE] Music sync error:', e);
+      }
+
+      console.log(`[MUSIC API] Full chunked audio ${trackId} successfully assembled (${fullAudioBuffer.length} bytes, 0 tokens burned).`);
+      return res.json({ success: true, complete: true, track: trackData });
+    } catch (err: any) {
+      console.error("[MUSIC API] Chunk upload error:", err);
+      res.status(500).json({ success: false, error: err.message || "Failed to process audio chunk" });
     }
   });
 

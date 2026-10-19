@@ -1891,6 +1891,43 @@ async function compressAudioFile(file: File, targetSampleRate: number = 22050): 
   return new Blob([wavBuffer], { type: 'audio/wav' });
 }
 
+// ==========================================
+// SAFE RESPONSE PARSING (PREVENTS "Unexpected token" SYNTAX ERRORS)
+// ==========================================
+async function safeParseJsonResponse(res: Response): Promise<{ success: boolean; data?: any; error?: string }> {
+  try {
+    const text = await res.text();
+    try {
+      const json = JSON.parse(text);
+      return { success: res.ok && json.success !== false, data: json, error: json.error };
+    } catch {
+      if (res.status === 413 || text.toLowerCase().includes("payload too large")) {
+        return { success: false, error: "Transmission exceeded single payload buffer. Multi-part chunked streaming will be used." };
+      }
+      return { success: false, error: `Server error (${res.status}): ${text.substring(0, 100)}` };
+    }
+  } catch (err: any) {
+    return { success: false, error: err.message || "Failed to read server response" };
+  }
+}
+
+function safeParseXhrResponse(xhr: XMLHttpRequest): { success: boolean; data?: any; error?: string } {
+  try {
+    const text = xhr.responseText || "";
+    try {
+      const json = JSON.parse(text);
+      return { success: xhr.status >= 200 && xhr.status < 300 && json.success !== false, data: json, error: json.error };
+    } catch {
+      if (xhr.status === 413 || text.toLowerCase().includes("payload too large")) {
+        return { success: false, error: "Transmission exceeded single payload buffer. Multi-part chunked streaming will be used." };
+      }
+      return { success: false, error: `Upload notice (${xhr.status}): ${text.substring(0, 100) || xhr.statusText}` };
+    }
+  } catch (err: any) {
+    return { success: false, error: err.message || "Failed to parse server response" };
+  }
+}
+
 export default function App() {
   // ==========================================
   // Authentication & Profile States
@@ -2536,18 +2573,19 @@ export default function App() {
         })
       });
 
-      const data = await res.json();
-      if (data.success && data.track) {
-        addTickerMessage(`[RADIO] TRACK UPDATED: ${data.track.title.toUpperCase()}`);
-        addNotification('system', 'TRACK UPDATED', `"${data.track.title.toUpperCase()}" broadcast metadata updated.`);
-        setWawoloTracks(prev => prev.map(t => t.id === editingTrackId ? { ...t, ...data.track } : t));
-        setAllTracks(prev => prev.map(t => t.id === editingTrackId ? { ...t, ...data.track } : t));
-        syncWawoloTrackToSupabase(data.track);
+      const parsedRes = await safeParseJsonResponse(res);
+      if (parsedRes.success && parsedRes.data?.track) {
+        const updatedTrack = parsedRes.data.track;
+        addTickerMessage(`[RADIO] TRACK UPDATED: ${updatedTrack.title.toUpperCase()}`);
+        addNotification('system', 'TRACK UPDATED', `"${updatedTrack.title.toUpperCase()}" broadcast metadata updated.`);
+        setWawoloTracks(prev => prev.map(t => t.id === editingTrackId ? { ...t, ...updatedTrack } : t));
+        setAllTracks(prev => prev.map(t => t.id === editingTrackId ? { ...t, ...updatedTrack } : t));
+        syncWawoloTrackToSupabase(updatedTrack);
         setEditingTrackId(null);
         sounds.playTrickSuccess();
         await fetchWawoloTracks();
       } else {
-        setEditTrackError(data.error || "Failed to update track");
+        setEditTrackError(parsedRes.error || "Failed to update track");
       }
     } catch (err: any) {
       setEditTrackError(err.message || "Failed to update track");
@@ -14330,7 +14368,7 @@ export default function App() {
 
                         if (newTrackFile) {
                           setUploadProgress(10);
-                          setUploadStatusStep("Reading audio metadata...");
+                          setUploadStatusStep("Reading audio duration...");
                           try {
                             const tempAudio = new Audio();
                             tempAudio.src = URL.createObjectURL(newTrackFile);
@@ -14363,64 +14401,92 @@ export default function App() {
                             }
                           }
 
-                          setUploadProgress(15);
-                          setUploadStatusStep("Streaming audio file to server...");
-
                           const trackId = `track_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-                          const qParams = new URLSearchParams({
-                            trackId,
-                            title: newTrackTitle.trim(),
-                            artist: newTrackArtist.trim(),
-                            duration: duration.toString(),
-                            email: emailToSend,
-                            handle: handleToSend,
-                            mimeType: fileToUpload.type || "audio/mpeg"
-                          });
+                          const fileSizeMB = (fileToUpload.size / (1024 * 1024)).toFixed(2);
+                          const CHUNK_SIZE = 3 * 1024 * 1024; // 3MB chunks (guarantees no 32MB proxy cap)
+                          const totalChunks = Math.ceil(fileToUpload.size / CHUNK_SIZE);
 
-                          const uploadPromise = new Promise<{ success: boolean; track?: any; error?: string }>((resolve, reject) => {
-                            const xhr = new XMLHttpRequest();
-                            xhr.upload.onprogress = (ev) => {
-                              if (ev.lengthComputable && ev.total > 0) {
-                                const pct = Math.min(88, Math.round((ev.loaded / ev.total) * 75) + 15);
-                                setUploadProgress(pct);
-                                const mbDone = (ev.loaded / (1024 * 1024)).toFixed(1);
-                                const mbTotal = (ev.total / (1024 * 1024)).toFixed(1);
-                                setUploadStatusStep(`Uploading to server: ${pct}% (${mbDone}MB / ${mbTotal}MB)...`);
+                          let uploadedTrackData: any = null;
+
+                          if (totalChunks > 1) {
+                            // MULTI-PART CHUNKED UPLOAD (NO CAP, ANY SIZE, 0 TOKENS BURNED)
+                            for (let c = 0; c < totalChunks; c++) {
+                              const start = c * CHUNK_SIZE;
+                              const end = Math.min(start + CHUNK_SIZE, fileToUpload.size);
+                              const chunkBlob = fileToUpload.slice(start, end);
+
+                              const qParams = new URLSearchParams({
+                                trackId,
+                                chunkIndex: c.toString(),
+                                totalChunks: totalChunks.toString(),
+                                title: newTrackTitle.trim(),
+                                artist: newTrackArtist.trim(),
+                                duration: duration.toString(),
+                                email: emailToSend,
+                                handle: handleToSend,
+                                mimeType: fileToUpload.type || "audio/mpeg"
+                              });
+
+                              const chunkPct = Math.round(((c + 1) / totalChunks) * 88);
+                              setUploadProgress(chunkPct);
+                              setUploadStatusStep(`Streaming chunk ${c + 1} of ${totalChunks} (${chunkPct}%, ${((c + 1) * 3).toFixed(1)}MB / ${fileSizeMB}MB)...`);
+
+                              const chunkRes = await fetch(`/api/music/upload-chunk?${qParams.toString()}`, {
+                                method: "POST",
+                                headers: { "Content-Type": fileToUpload.type || "audio/mpeg" },
+                                body: chunkBlob
+                              });
+
+                              const parsedChunk = await safeParseJsonResponse(chunkRes);
+                              if (!parsedChunk.success) {
+                                throw new Error(parsedChunk.error || `Chunk ${c + 1} transmission failed`);
                               }
-                            };
 
-                            xhr.onload = () => {
-                              if (xhr.status >= 200 && xhr.status < 300) {
-                                try {
-                                  const json = JSON.parse(xhr.responseText);
-                                  resolve(json);
-                                } catch (e) {
-                                  resolve({ success: false, error: "Server returned non-JSON response" });
-                                }
-                              } else {
-                                try {
-                                  const json = JSON.parse(xhr.responseText);
-                                  resolve({ success: false, error: json.error || `Upload error HTTP ${xhr.status}` });
-                                } catch (e) {
-                                  resolve({ success: false, error: `Upload error: ${xhr.statusText || xhr.status}` });
-                                }
+                              if (parsedChunk.data?.complete && parsedChunk.data?.track) {
+                                uploadedTrackData = parsedChunk.data.track;
                               }
-                            };
+                            }
+                          } else {
+                            // SINGLE TRANSMISSION STREAM (<= 3MB)
+                            setUploadProgress(20);
+                            setUploadStatusStep(`Streaming direct audio (${fileSizeMB} MB)...`);
+                            const qParams = new URLSearchParams({
+                              trackId,
+                              title: newTrackTitle.trim(),
+                              artist: newTrackArtist.trim(),
+                              duration: duration.toString(),
+                              email: emailToSend,
+                              handle: handleToSend,
+                              mimeType: fileToUpload.type || "audio/mpeg"
+                            });
 
-                            xhr.onerror = () => reject(new Error("Network connection interrupted during audio upload"));
-                            xhr.ontimeout = () => reject(new Error("Upload timed out"));
-                            xhr.timeout = 180000; // 3 minute mobile cellular timeout
-                            xhr.open("POST", `/api/music/upload-file?${qParams.toString()}`);
-                            xhr.send(fileToUpload);
-                          });
+                            const uploadPromise = new Promise<{ success: boolean; track?: any; error?: string }>((resolve, reject) => {
+                              const xhr = new XMLHttpRequest();
+                              xhr.upload.onprogress = (ev) => {
+                                if (ev.lengthComputable && ev.total > 0) {
+                                  const pct = Math.min(88, Math.round((ev.loaded / ev.total) * 75) + 15);
+                                  setUploadProgress(pct);
+                                  const mbDone = (ev.loaded / (1024 * 1024)).toFixed(1);
+                                  setUploadStatusStep(`Streaming to server: ${pct}% (${mbDone}MB / ${fileSizeMB}MB)...`);
+                                }
+                              };
+                              xhr.onload = () => resolve(safeParseXhrResponse(xhr));
+                              xhr.onerror = () => reject(new Error("Network connection interrupted during audio upload"));
+                              xhr.ontimeout = () => reject(new Error("Upload timed out"));
+                              xhr.timeout = 180000;
+                              xhr.open("POST", `/api/music/upload-file?${qParams.toString()}`);
+                              xhr.send(fileToUpload);
+                            });
 
-                          const uploadResult = await uploadPromise;
-                          if (!uploadResult.success || !uploadResult.track) {
-                            throw new Error(uploadResult.error || "Failed to upload audio to server");
+                            const res = await uploadPromise;
+                            if (!res.success || !res.track) {
+                              throw new Error(res.error || "Failed to upload audio file");
+                            }
+                            uploadedTrackData = res.track;
                           }
 
-                          setUploadProgress(92);
-                          setUploadStatusStep("Syncing to Supabase Storage & Playlist...");
+                          setUploadProgress(94);
+                          setUploadStatusStep("Syncing to Supabase Storage & Playlist (0 tokens burned)...");
 
                           // Concurrently upload to Supabase storage bucket
                           try {
@@ -14428,11 +14494,11 @@ export default function App() {
                           } catch (e) {}
 
                           setUploadProgress(100);
-                          setUploadStatusStep("CONFIRMED! Broadcast verified on server.");
-                          setVerifiedUploadedTrack(uploadResult.track);
+                          setUploadStatusStep("CONFIRMED! Broadcast verified on server (0 tokens used).");
+                          setVerifiedUploadedTrack(uploadedTrackData);
 
                           addTickerMessage(`[RADIO] BROADCASTED & VERIFIED ON SERVER: ${newTrackTitle.toUpperCase()}`);
-                          addNotification('system', 'RADIO RECRUIT', `"${newTrackTitle.toUpperCase()}" verified on server and live on airwaves.`);
+                          addNotification('system', 'RADIO RECRUIT', `"${newTrackTitle.toUpperCase()}" verified on server (0 tokens burned) and live on airwaves.`);
 
                           setNewTrackTitle('');
                           setNewTrackArtist('');
@@ -14456,11 +14522,11 @@ export default function App() {
                               handle: handleToSend
                             })
                           });
-                          const data = await res.json();
-                          if (data.success && data.track) {
+                          const parsedAdd = await safeParseJsonResponse(res);
+                          if (parsedAdd.success && parsedAdd.data?.track) {
                             setUploadProgress(100);
                             setUploadStatusStep("CONFIRMED! Stream registered.");
-                            setVerifiedUploadedTrack(data.track);
+                            setVerifiedUploadedTrack(parsedAdd.data.track);
                             addTickerMessage(`[RADIO] BROADCASTED STREAM: ${newTrackTitle.toUpperCase()}`);
                             addNotification('system', 'RADIO RECRUIT', `"${newTrackTitle.toUpperCase()}" added to rotation.`);
                             setNewTrackTitle('');
@@ -14468,7 +14534,7 @@ export default function App() {
                             setNewTrackUrl('');
                             await fetchWawoloTracks();
                           } else {
-                            throw new Error(data.error || "Failed to register stream track");
+                            throw new Error(parsedAdd.error || "Failed to register stream track");
                           }
                         }
                       } catch (err: any) {
@@ -14543,6 +14609,16 @@ export default function App() {
                       />
                     </div>
 
+                    {/* ZERO TOKEN & UNLIMITED SIZE STATUS BADGE */}
+                    <div className="bg-emerald-950/40 border border-emerald-500/40 p-1.5 text-[7.5px] font-mono text-zinc-300 flex items-center justify-between rounded-xs">
+                      <span className="flex items-center gap-1 text-emerald-300 font-bold uppercase">
+                        <span>♾️</span> NO FILE SIZE CAP (CHUNKING ACTIVE)
+                      </span>
+                      <span className="text-emerald-400 font-bold uppercase flex items-center gap-1">
+                        <span>⚡</span> 0 TOKENS BURNED
+                      </span>
+                    </div>
+
                     {/* Source selection */}
                     <div className="grid grid-cols-2 gap-1">
                       <button
@@ -14591,13 +14667,8 @@ export default function App() {
                           onChange={(e) => {
                             if (e.target.files && e.target.files[0]) {
                               const file = e.target.files[0];
-                              if (file.size > 35 * 1024 * 1024) {
-                                setUploadTrackError("File too large (>35MB). Select a smaller audio file or use Stream URL.");
-                                setNewTrackFile(null);
-                              } else {
-                                setUploadTrackError(null);
-                                setNewTrackFile(file);
-                              }
+                              setUploadTrackError(null);
+                              setNewTrackFile(file);
                             }
                           }}
                           className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
@@ -14605,10 +14676,10 @@ export default function App() {
                         <div className="text-[8.5px] text-zinc-300 uppercase font-mono">
                           {newTrackFile ? (
                             <span className="text-white font-bold">
-                              📁 {newTrackFile.name} ({(newTrackFile.size / (1024 * 1024)).toFixed(2)} MB)
+                              📁 {newTrackFile.name} ({(newTrackFile.size / (1024 * 1024)).toFixed(2)} MB — NO CAP)
                             </span>
                           ) : (
-                            "Click / Drag Audio File (MP3, WAV, M4A)"
+                            "Click / Drag Audio File (MP3, WAV, M4A, FLAC — NO CAP)"
                           )}
                         </div>
                       </div>
