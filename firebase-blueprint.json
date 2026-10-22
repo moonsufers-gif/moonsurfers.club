@@ -137,6 +137,38 @@
       },
       "required": ["id", "name", "startHour", "endHour", "trackIds"]
     },
+    "WawoloradioTrack": {
+      "title": "WawoloRadio Track",
+      "description": "On-air radio soundtrack music tracks synced across devices.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "artist": { "type": "string" },
+        "url": { "type": "string" },
+        "duration": { "type": "number" },
+        "uploadedBy": { "type": "string" },
+        "uploadedAt": { "type": "string" },
+        "orderIndex": { "type": "number" },
+        "isUploaded": { "type": "boolean" }
+      },
+      "required": ["id", "title", "artist", "url"]
+    },
+    "WawoloradioCurator": {
+      "title": "WawoloRadio On-Air DJ Curator",
+      "description": "The active on-air DJ curator promoted by admins during sections.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "handle": { "type": "string" },
+        "vibe": { "type": "string" },
+        "avatar": { "type": "string" },
+        "userId": { "type": "string" },
+        "promotedBy": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["name", "handle"]
+    },
     "MoonPhase": {
       "title": "Moon Phase Data",
       "description": "Lunar phase record in database representing real-time moon phase configurations.",
@@ -181,6 +213,14 @@
     "wawoloradio_playlists/{playlistId}": {
       "schema": "WawoloradioPlaylist",
       "description": "Scheduled tracks rotation playlists synced with database."
+    },
+    "wawoloradio_tracks/{trackId}": {
+      "schema": "WawoloradioTrack",
+      "description": "Global radio playlist tracks synced for continuous live stream."
+    },
+    "system_config/{configId}": {
+      "schema": "WawoloradioCurator",
+      "description": "System configs and real-time On-Air DJ curator configuration."
     },
     "moon_phases/{phaseId}": {
       "schema": "MoonPhase",

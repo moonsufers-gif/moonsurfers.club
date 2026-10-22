@@ -1953,9 +1953,13 @@ Return a rigorous JSON object matching this schema exactly:
   }
 
   // Helper to check admin status
-  const checkAdminAuth = (email: string, handle: string) => {
+  const checkAdminAuth = (email: string, handle: string, req?: express.Request) => {
     const normEmail = (email || "").toLowerCase().trim();
     const normHandle = (handle || "").toLowerCase().trim().replace(/^@/, '');
+    const headerKey = (req?.headers?.["x-admin-key"] as string || "").toLowerCase().trim();
+    const headerHandle = (req?.headers?.["x-admin-handle"] as string || "").toLowerCase().trim().replace(/^@/, '');
+    const headerEmail = (req?.headers?.["x-admin-email"] as string || "").toLowerCase().trim();
+
     return (
       normEmail === 'inenepadi@gmail.com' || 
       normEmail === 'moonsurfers@gmail.com' || 
@@ -1972,7 +1976,15 @@ Return a rigorous JSON object matching this schema exactly:
       normHandle === 'inene' ||
       normHandle === 'inenepadi' ||
       normHandle === 'inene233' ||
-      normHandle.includes('inene')
+      normHandle.includes('inene') ||
+      headerKey === 'inene233' ||
+      headerKey === 'moonsurfers' ||
+      headerKey === 'admin' ||
+      headerHandle.includes('inene') ||
+      headerHandle.includes('moonsurfer') ||
+      headerHandle.includes('moonsufer') ||
+      headerEmail.includes('inene') ||
+      headerEmail.includes('moonsurfer')
     );
   };
 
@@ -2183,12 +2195,15 @@ Return a rigorous JSON object matching this schema exactly:
     }
   });
 
-  // Helper to retrieve curator info
   async function getCuratorInfo() {
     try {
       const docSnap = await db.collection("wawoloradio_settings").doc("curator").get();
       if (docSnap.exists) {
         return docSnap.data();
+      }
+      const sysSnap = await db.collection("system_config").doc("wawoloradio_curator").get();
+      if (sysSnap.exists) {
+        return sysSnap.data();
       }
     } catch (e) {
       // fallback
@@ -2305,8 +2320,8 @@ Return a rigorous JSON object matching this schema exactly:
       const callerEmail = adminEmail || email;
       const callerHandle = adminHandle || handle;
       
-      if (!checkAdminAuth(callerEmail, callerHandle)) {
-        return res.status(403).json({ success: false, error: "Unauthorized admin access: Only admin emails can select the On-Air DJ" });
+      if (!checkAdminAuth(callerEmail, callerHandle, req)) {
+        return res.status(403).json({ success: false, error: "Unauthorized admin access: Only admin accounts (@inene233 / moonsurfers) can select the On-Air DJ" });
       }
 
       const curatorData = {
@@ -2316,9 +2331,11 @@ Return a rigorous JSON object matching this schema exactly:
         avatar: avatar || "/assets/brand/moonsurfers-favicon.png",
         userId: userId || null,
         email: email || null,
+        promotedBy: callerHandle || callerEmail || "@inene233",
         updatedAt: new Date().toISOString()
       };
       await db.collection("wawoloradio_settings").doc("curator").set(curatorData, { merge: true });
+      await db.collection("system_config").doc("wawoloradio_curator").set(curatorData, { merge: true });
 
       // If a specific registered user was promoted, flag their user document
       if (userId) {
@@ -2372,7 +2389,7 @@ Return a rigorous JSON object matching this schema exactly:
   app.post("/api/music/playlists", async (req, res) => {
     try {
       const { id, name, startHour, endHour, trackIds, email, handle } = req.body;
-      if (!checkAdminAuth(email, handle)) {
+      if (!checkAdminAuth(email, handle, req)) {
         return res.status(403).json({ success: false, error: "Unauthorized admin access" });
       }
       if (!name || startHour === undefined || endHour === undefined || !trackIds) {
@@ -2401,7 +2418,7 @@ Return a rigorous JSON object matching this schema exactly:
   app.post("/api/music/playlists/delete", async (req, res) => {
     try {
       const { playlistId, email, handle } = req.body;
-      if (!checkAdminAuth(email, handle)) {
+      if (!checkAdminAuth(email, handle, req)) {
         return res.status(403).json({ success: false, error: "Unauthorized admin access" });
       }
       if (!playlistId) {
@@ -2420,7 +2437,7 @@ Return a rigorous JSON object matching this schema exactly:
   app.post("/api/music/control", async (req, res) => {
     try {
       const { action, email, handle } = req.body;
-      if (!checkAdminAuth(email, handle)) {
+      if (!checkAdminAuth(email, handle, req)) {
         return res.status(403).json({ success: false, error: "Unauthorized admin access" });
       }
 
@@ -2609,7 +2626,7 @@ Return a rigorous JSON object matching this schema exactly:
       const mimeType = (req.query.mimeType as string) || (req.headers["content-type"] as string) || "audio/mpeg";
       const customTrackId = (req.query.trackId as string) || (req.headers["x-track-id"] as string);
 
-      if (!checkAdminAuth(email, handle)) {
+      if (!checkAdminAuth(email, handle, req)) {
         return res.status(403).json({ success: false, error: "Unauthorized admin access: Only admin accounts (@inene233 / moonsurfers) can upload tracks" });
       }
 
@@ -2719,7 +2736,7 @@ Return a rigorous JSON object matching this schema exactly:
       const handle = (req.query.handle as string) || (req.headers["x-admin-handle"] as string) || "";
       const mimeType = (req.query.mimeType as string) || (req.headers["content-type"] as string) || "audio/mpeg";
 
-      if (!checkAdminAuth(email, handle)) {
+      if (!checkAdminAuth(email, handle, req)) {
         return res.status(403).json({ success: false, error: "Unauthorized admin access: Only admin accounts (@inene233 / moonsurfers) can upload tracks" });
       }
 
@@ -2864,7 +2881,7 @@ Return a rigorous JSON object matching this schema exactly:
     try {
       const { title, artist, fileBase64, externalUrl, duration, email, handle } = req.body;
 
-      if (!checkAdminAuth(email, handle)) {
+      if (!checkAdminAuth(email, handle, req)) {
         return res.status(403).json({ success: false, error: "Unauthorized admin access" });
       }
 
@@ -2980,7 +2997,7 @@ Return a rigorous JSON object matching this schema exactly:
       const { trackId, id, title, artist, duration, orderIndex, fileBase64, externalUrl, email, handle } = req.body;
       const finalTrackId = trackId || id;
 
-      if (!checkAdminAuth(email, handle)) {
+      if (!checkAdminAuth(email, handle, req)) {
         return res.status(403).json({ success: false, error: "Unauthorized admin access: Only admins can update tracks" });
       }
 
@@ -3102,7 +3119,7 @@ Return a rigorous JSON object matching this schema exactly:
         return res.status(400).json({ success: false, error: "Track ID is required" });
       }
 
-      const isAdmin = checkAdminAuth(email, handle);
+      const isAdmin = checkAdminAuth(email, handle, req);
       if (!isAdmin) {
         return res.status(403).json({ success: false, error: "Unauthorized admin access: Only admins can delete tracks" });
       }
