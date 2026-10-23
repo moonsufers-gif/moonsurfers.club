@@ -3383,6 +3383,56 @@ export default function App() {
     }
   };
 
+  const [isClearingAllTracks, setIsClearingAllTracks] = useState<boolean>(false);
+  const clearAllTracksAndCache = async () => {
+    if (!window.confirm("ARE YOU SURE? This will remove all old tracks and clear all audio cache on the server and devices so fresh DJ tracks can be broadcasted.")) {
+      return;
+    }
+    setIsClearingAllTracks(true);
+    sounds.playSelect();
+    try {
+      const emailToSend = currentUser?.email || profile?.email || 'moonsufers@gmail.com';
+      const handleToSend = profile?.handle || currentUser?.displayName || radioCurator?.handle || "moonsurfers";
+
+      // 1. Clear browser audio Cache API
+      if ('caches' in window) {
+        try {
+          await caches.delete(AUDIO_CACHE_NAME);
+          console.log("[RADIO] Client audio cache purged.");
+        } catch (e) {}
+      }
+      setOfflineCachedCount(0);
+      setWawoloTracks([]);
+      setAllTracks([]);
+      setCurrentTrackIndex(-1);
+      setIsRadioPlaying(false);
+
+      // 2. Clear server tracks and local mp3 cache
+      const res = await fetch("/api/music/clear-all", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-key": "moonsurfers",
+          "x-dj-auth": isDj ? "true" : "false",
+          "x-admin-handle": handleToSend,
+          "x-admin-email": emailToSend
+        },
+        body: JSON.stringify({ email: emailToSend, handle: handleToSend })
+      });
+      const data = await res.json();
+      if (data.success) {
+        addTickerMessage("[RADIO] 🧹 ALL OLD TRACKS & CACHE PURGED! DECK IS CLEAN.");
+        addNotification('system', 'TRACKS CLEARED', 'All old tracks and cache purged. Deck is ready for fresh uploads.');
+      }
+    } catch (err: any) {
+      console.error("[RADIO] Clear failed:", err);
+      alert(`Error clearing tracks: ${err.message}`);
+    } finally {
+      setIsClearingAllTracks(false);
+      await fetchWawoloTracks();
+    }
+  };
+
   useEffect(() => {
     fetchWawoloTracks();
     const interval = setInterval(fetchWawoloTracks, 5000); // 5s interval for precise 24/7 synchronization
@@ -3429,6 +3479,9 @@ export default function App() {
             return merged;
           });
         }
+      } else {
+        setWawoloTracks([]);
+        setAllTracks([]);
       }
     });
 
@@ -3447,6 +3500,16 @@ export default function App() {
           });
           if (typeof stateData.currentTrackIndex === 'number' && stateData.currentTrackIndex >= 0) {
             setCurrentTrackIndex(stateData.currentTrackIndex);
+          }
+          // Instant real-time playback for all listeners & guests when station goes Live
+          if (stateData.isPlaying === true) {
+            setIsRadioPlaying(true);
+            const activeAudio = activeDeckTagRef.current === 'secondary' && secondaryAudioRef.current
+              ? secondaryAudioRef.current
+              : radioAudioRef.current;
+            if (activeAudio && activeAudio.paused) {
+              activeAudio.play().catch(e => console.warn("[RADIO] Live auto-tune note:", e));
+            }
           }
         }
       }
@@ -8880,32 +8943,78 @@ export default function App() {
               <span className="text-white font-semibold">MOONSHINE {(effectiveMoon.illumination * 100).toFixed(0)}%</span>
             </div>
 
-            {/* Persistent WawoloRadio Audio Control on Lockscreen / Login Portal */}
-            <div className="border border-white/10 bg-black/70 p-2 rounded-xs flex items-center justify-between text-[9px] font-mono">
-              <div className="flex items-center gap-2 overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => {
-                    sounds.playSelect();
-                    setIsRadioPlaying(!isRadioPlaying);
-                  }}
-                  className="p-1.5 bg-red-600 hover:bg-red-500 text-white rounded-full transition-all shrink-0 cursor-pointer shadow-sm"
-                  title={isRadioPlaying ? "Pause WawoloRadio" : "Play WawoloRadio"}
-                >
-                  {isRadioPlaying ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
-                </button>
-                <div className="truncate text-left">
-                  <div className="text-white font-black truncate text-[9px] tracking-tight">
-                    📻 WAWOLORADIO • {wawoloTracks[activePlayIndex]?.title || "24/7 NIGHT STREAM"}
-                  </div>
-                  <div className="text-zinc-400 text-[8px] truncate">
-                    {wawoloTracks[activePlayIndex]?.artist || "OUTLAW ROTATION"}
+            {/* Persistent WawoloRadio Live Stream on Login Screen for all users & guests */}
+            <div className={`p-2.5 rounded-xs border transition-all text-left font-mono ${
+              radioPlaybackState?.isPlaying
+                ? "bg-gradient-to-r from-red-950/70 via-black to-red-950/70 border-red-500/70 shadow-[0_0_15px_rgba(255,0,43,0.3)]"
+                : "bg-black/80 border-white/10"
+            }`}>
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-1.5">
+                  <span className={`w-2 h-2 rounded-full ${radioPlaybackState?.isPlaying ? "bg-red-500 animate-ping" : "bg-zinc-600"}`} />
+                  <span className="text-[9px] font-black uppercase tracking-wider text-white">
+                    {radioPlaybackState?.isPlaying ? "🔴 WAWOLORADIO LIVE ON AIR" : "📻 WAWOLORADIO"}
+                  </span>
+                </div>
+                <span className={`text-[7.5px] font-bold uppercase ${radioPlaybackState?.isPlaying ? "text-red-400 animate-pulse" : "text-zinc-500"}`}>
+                  {radioPlaybackState?.isPlaying ? "BROADCASTING LIVE" : "STATION IDLE"}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 overflow-hidden flex-1 min-w-0">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      sounds.playSelect();
+                      setIsRadioPlaying(!isRadioPlaying);
+                    }}
+                    className={`p-2 text-white rounded-xs transition-all shrink-0 cursor-pointer flex items-center justify-center ${
+                      isRadioPlaying && radioPlaybackState?.isPlaying
+                        ? "bg-red-600 hover:bg-red-500 shadow-[0_0_10px_rgba(255,0,43,0.7)]"
+                        : "bg-zinc-800 hover:bg-zinc-700 text-zinc-200"
+                    }`}
+                    title={isRadioPlaying ? "Mute Radio" : "Tune In to WawoloRadio"}
+                  >
+                    {isRadioPlaying && radioPlaybackState?.isPlaying ? (
+                      <Pause className="w-3.5 h-3.5 text-white" />
+                    ) : (
+                      <Play className="w-3.5 h-3.5 fill-current text-white" />
+                    )}
+                  </button>
+                  <div className="truncate text-left flex-1 min-w-0">
+                    <div className="text-white font-black truncate text-[9.5px] uppercase tracking-tight">
+                      {wawoloTracks.length > 0 && activePlayIndex >= 0 && wawoloTracks[activePlayIndex]
+                        ? wawoloTracks[activePlayIndex].title
+                        : radioPlaybackState?.isPlaying
+                        ? "ON-AIR DJ SESSION"
+                        : "WAWOLORADIO • 24/7 BROADCAST"}
+                    </div>
+                    <div className="text-zinc-400 text-[8px] truncate uppercase">
+                      {wawoloTracks.length > 0 && activePlayIndex >= 0 && wawoloTracks[activePlayIndex]
+                        ? `@${wawoloTracks[activePlayIndex].artist}`
+                        : radioCurator?.name || "@moonsurfers"}
+                    </div>
                   </div>
                 </div>
-              </div>
-              <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-                <span className="text-[8px] text-red-400 font-bold uppercase tracking-wider">LIVE</span>
+
+                {/* Volume slider */}
+                <div className="flex items-center gap-1 shrink-0 bg-zinc-950 px-2 py-1 border border-white/10 rounded-xs">
+                  {radioVolume === 0 ? (
+                    <VolumeX className="w-3 h-3 text-zinc-500" />
+                  ) : (
+                    <Volume2 className="w-3 h-3 text-zinc-400" />
+                  )}
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={radioVolume}
+                    onChange={(e) => setRadioVolume(parseFloat(e.target.value))}
+                    className="w-14 h-1 accent-red-500 cursor-pointer"
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -14566,7 +14675,7 @@ export default function App() {
                       {isRadioPlaying ? <Pause className="w-3.5 h-3.5 text-emerald-400" /> : <Play className="w-3.5 h-3.5 fill-current" />}
                     </button>
 
-                    {isAdmin && (
+                    {canManageRadio && (
                       <button
                         type="button"
                         onClick={() => {
@@ -14574,84 +14683,11 @@ export default function App() {
                           controlRadio("skip");
                         }}
                         className="w-8 h-8 flex items-center justify-center bg-zinc-900 border border-white/10 hover:border-white text-white/80 hover:text-white cursor-pointer active:scale-95 transition-all shrink-0 rounded-xs"
-                        title="Global Skip Track"
+                        title="Skip to Next Track"
                       >
                         <SkipForward className="w-3.5 h-3.5" />
                       </button>
                     )}
-
-                    {/* Snippet Loop / Repeat Mode Toggle Control */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        sounds.playSelect();
-                        setRepeatMode(prev => {
-                          if (prev === 'all') {
-                            addTickerMessage("[SNIPPET LOOP] 15-second energetic snippet repeat active with seamless crossfader!");
-                            return 'snippet';
-                          }
-                          if (prev === 'snippet') {
-                            addTickerMessage("[REPEAT TRACK] Full song repeat loop active!");
-                            return 'track';
-                          }
-                          addTickerMessage("[ROTATION ACTIVE] Full playlist 24/7 crossfade mode!");
-                          return 'all';
-                        });
-                      }}
-                      className={`h-8 px-2 flex-1 min-w-[80px] flex items-center justify-center gap-1 border text-[8.5px] font-black uppercase cursor-pointer active:scale-95 transition-all rounded-xs truncate ${
-                        repeatMode === 'snippet'
-                          ? "bg-purple-950/90 border-purple-500/80 text-purple-300 shadow-[0_0_12px_rgba(168,85,247,0.5)]"
-                          : repeatMode === 'track'
-                          ? "bg-amber-950/90 border-amber-500/80 text-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.5)]"
-                          : "bg-zinc-900 border-white/10 hover:border-white text-zinc-300 hover:text-white"
-                      }`}
-                      title={
-                        repeatMode === 'snippet'
-                          ? "Snippet Repeat Active: 15-second snippet loops continuously with seamless DJ crossfade"
-                          : repeatMode === 'track'
-                          ? "Track Repeat Active: Full song loops with DJ crossfade"
-                          : "Rotation Active: Continuous crossfade through all tracks"
-                      }
-                    >
-                      {repeatMode === 'snippet' ? (
-                        <>
-                          <Repeat1 className="w-3 h-3 text-purple-400 animate-spin shrink-0" style={{ animationDuration: '4s' }} />
-                          <span className="truncate">15S LOOP</span>
-                        </>
-                      ) : repeatMode === 'track' ? (
-                        <>
-                          <Repeat1 className="w-3 h-3 text-amber-400 shrink-0" />
-                          <span className="truncate font-bold">REPEAT 1</span>
-                        </>
-                      ) : (
-                        <>
-                          <Repeat className="w-3 h-3 text-zinc-400 shrink-0" />
-                          <span className="truncate">LOOP ALL</span>
-                        </>
-                      )}
-                    </button>
-
-                    {/* SoundCloud-Style Auto-Downloaded Offline Cache API Indicator Badge */}
-                    <button
-                      type="button"
-                      onClick={downloadPlaylistForOffline}
-                      disabled={isOfflineDownloading || (wawoloTracks.length > 0 && offlineCachedCount >= wawoloTracks.length)}
-                      className={`h-8 px-2 flex-1 min-w-[90px] flex items-center justify-center gap-1 border text-[8.5px] font-black uppercase cursor-pointer active:scale-95 transition-all rounded-xs truncate ${
-                        offlineCachedCount >= wawoloTracks.length && wawoloTracks.length > 0
-                          ? "bg-emerald-950/80 border-emerald-500/50 text-emerald-400"
-                          : isOfflineDownloading
-                          ? "bg-red-950 border-red-500 text-red-200 animate-pulse"
-                          : "bg-zinc-900 border-white/10 hover:border-red-500 text-zinc-300 hover:text-white"
-                      }`}
-                      title="Automatic SoundCloud-Style Offline Cache API Storage"
-                    >
-                      <Download className={`w-3 h-3 shrink-0 ${isOfflineDownloading ? "animate-bounce" : ""}`} />
-                      <span className="truncate">
-                        {isOfflineDownloading
-                          ? `SYNC (${offlineCachedCount}/${wawoloTracks.length})`
-                          : `OFFLINE (${offlineCachedCount}/${wawoloTracks.length})`}
-                      </span>
-                    </button>
                   </>
                 ) : null}
 
@@ -14821,16 +14857,29 @@ export default function App() {
                       <span className="text-[8.5px] text-zinc-400 font-bold uppercase tracking-widest">
                         Rotation ({wawoloTracks.length} Songs)
                       </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          sounds.playSelect();
-                          setActiveAdminTab('add');
-                        }}
-                        className="text-[7.5px] font-bold text-red-400 hover:text-red-300 uppercase font-mono cursor-pointer flex items-center gap-0.5"
-                      >
-                        + Add Song
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        {wawoloTracks.length > 0 && (
+                          <button
+                            type="button"
+                            disabled={isClearingAllTracks}
+                            onClick={clearAllTracksAndCache}
+                            className="text-[7.5px] font-bold text-zinc-400 hover:text-red-400 uppercase font-mono cursor-pointer transition-colors"
+                            title="Clear all tracks and cache"
+                          >
+                            {isClearingAllTracks ? "Clearing..." : "🧹 Clear Deck"}
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            sounds.playSelect();
+                            setActiveAdminTab('add');
+                          }}
+                          className="text-[7.5px] font-bold text-red-400 hover:text-red-300 uppercase font-mono cursor-pointer flex items-center gap-0.5"
+                        >
+                          + Add Song
+                        </button>
+                      </div>
                     </div>
 
                     <div className="max-h-56 overflow-y-auto space-y-1 pr-1 text-[9px]">
@@ -15087,16 +15136,6 @@ export default function App() {
                         <Music className="w-2.5 h-2.5 text-zinc-400" />
                         <span>SINGLE TRACK / URL</span>
                       </button>
-                    </div>
-
-                    {/* ZERO TOKEN & UNLIMITED STREAM BADGE */}
-                    <div className="bg-emerald-950/40 border border-emerald-500/40 p-1.5 text-[7.5px] font-mono text-zinc-300 flex items-center justify-between rounded-xs">
-                      <span className="flex items-center gap-1 text-emerald-300 font-bold uppercase">
-                        <span>♾️</span> UNLIMITED MULTI-TRACK STREAM
-                      </span>
-                      <span className="text-emerald-400 font-bold uppercase flex items-center gap-1">
-                        <span>⚡</span> 0 TOKENS BURNED
-                      </span>
                     </div>
 
                     {/* BATCH UPLOAD INTERFACE */}

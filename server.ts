@@ -2087,23 +2087,6 @@ Return a rigorous JSON object matching this schema exactly:
         tracks.push({ id: doc.id, ...doc.data() });
       });
 
-      if (tracks.length === 0) {
-        console.log("[MUSIC API] Seeding fresh default WawoloRadio tracks into Firestore...");
-        for (const t of DEFAULT_SEED_TRACKS) {
-          await db.collection("wawoloradio_tracks").doc(t.id).set(t);
-          tracks.push(t);
-        }
-      }
-
-      for (const t of DEFAULT_SEED_TRACKS) {
-        const p = path.join(MUSIC_DIR, `${t.id}.mp3`);
-        if (!fs.existsSync(p)) {
-          try {
-            fs.writeFileSync(p, generateSyntheticAudioBuffer(t.id));
-          } catch (e) {}
-        }
-      }
-
       tracks.sort((a, b) => {
         if (typeof a.orderIndex === "number" && typeof b.orderIndex === "number") {
           if (a.orderIndex !== b.orderIndex) return a.orderIndex - b.orderIndex;
@@ -2119,8 +2102,8 @@ Return a rigorous JSON object matching this schema exactly:
       tracksCache = { data: tracks, timestamp: Date.now() };
       return tracks;
     } catch (err) {
-      console.warn("[MUSIC API] Error retrieving or seeding tracks:", err);
-      return DEFAULT_SEED_TRACKS;
+      console.warn("[MUSIC API] Error retrieving tracks:", err);
+      return [];
     }
   }
 
@@ -2530,6 +2513,65 @@ Return a rigorous JSON object matching this schema exactly:
       res.json({ success: true, radioState: currentPlayback });
     } catch (err: any) {
       console.error("[MUSIC API] Control error:", err);
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Clear all tracks and cache endpoint (admin/DJ authorized)
+  app.post("/api/music/clear-all", async (req, res) => {
+    try {
+      const { email, handle } = req.body;
+      if (!checkAdminAuth(email, handle, req)) {
+        return res.status(403).json({ success: false, error: "Unauthorized admin access" });
+      }
+
+      console.log(`[MUSIC API] Purging all tracks and cache initiated by ${handle || email}...`);
+      
+      // 1. Delete all Firestore track documents
+      const snap = await db.collection("wawoloradio_tracks").get();
+      const deletePromises: any[] = [];
+      snap.forEach((docSnap) => {
+        deletePromises.push(db.collection("wawoloradio_tracks").doc(docSnap.id).delete());
+      });
+      await Promise.all(deletePromises);
+
+      // 2. Clear local music directory cache
+      try {
+        if (fs.existsSync(MUSIC_DIR)) {
+          const files = fs.readdirSync(MUSIC_DIR);
+          for (const file of files) {
+            fs.unlinkSync(path.join(MUSIC_DIR, file));
+          }
+        }
+      } catch (fErr) {
+        console.warn("[MUSIC API] Local cache delete warning:", fErr);
+      }
+
+      // 3. Reset in-memory state and cache
+      invalidateTracksCache();
+      radioState.isPlaying = false;
+      radioState.currentTrackIndex = -1;
+      radioState.currentTrackId = "";
+      radioState.activePlaylistId = null;
+      radioState.trackStartedAt = Date.now();
+
+      // 4. Update system_config/wawoloradio_state in Firestore
+      try {
+        await db.collection("system_config").doc("wawoloradio_state").set({
+          isPlaying: false,
+          currentTrackIndex: -1,
+          currentTrackId: "",
+          elapsedMs: 0,
+          durationMs: 0,
+          activePlaylistId: null,
+          updatedAt: new Date().toISOString(),
+          updatedBy: handle || email || "admin"
+        }, { merge: true });
+      } catch (fErr) {}
+
+      res.json({ success: true, message: `Successfully cleared ${snap.size} tracks and purged music cache` });
+    } catch (err: any) {
+      console.error("[MUSIC API] Clear all tracks error:", err);
       res.status(500).json({ success: false, error: err.message });
     }
   });
