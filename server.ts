@@ -2031,41 +2031,7 @@ Return a rigorous JSON object matching this schema exactly:
     return buffer;
   }
 
-  const DEFAULT_SEED_TRACKS = [
-    {
-      id: "track_4b35ecb2-15ac-454c-9e74-d06584dad16b",
-      title: "Midnight Street Session",
-      artist: "Nomad Beats",
-      url: "/api/music/play/track_4b35ecb2-15ac-454c-9e74-d06584dad16b",
-      isUploaded: true,
-      duration: 180,
-      orderIndex: 0,
-      uploadedBy: "@nomad_beats",
-      uploadedAt: new Date().toISOString()
-    },
-    {
-      id: "track_c95fafdd-c6aa-4ea2-b51a-13fc324160f2",
-      title: "Skatepark Sunset Vibes",
-      artist: "Wawolo Sound System",
-      url: "/api/music/play/track_c95fafdd-c6aa-4ea2-b51a-13fc324160f2",
-      isUploaded: true,
-      duration: 195,
-      orderIndex: 1,
-      uploadedBy: "@wawolo_sound",
-      uploadedAt: new Date().toISOString()
-    },
-    {
-      id: "track_5d46f54f-6f8f-460c-a553-865437556439",
-      title: "Neon Asphalt Groove",
-      artist: "MoonSurfers Crew",
-      url: "/api/music/play/track_5d46f54f-6f8f-460c-a553-865437556439",
-      isUploaded: true,
-      duration: 210,
-      orderIndex: 2,
-      uploadedBy: "@moonsurfers",
-      uploadedAt: new Date().toISOString()
-    }
-  ];
+  const DEFAULT_SEED_TRACKS: any[] = [];
 
   let tracksCache: { data: any[]; timestamp: number } | null = null;
   const TRACKS_CACHE_TTL_MS = 5000; // 5-second in-memory cache TTL for heavy traffic scaling

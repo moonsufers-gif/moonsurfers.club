@@ -2346,25 +2346,7 @@ export default function App() {
     localStorage.setItem('wawolo_radio_playing', String(isRadioPlaying));
   }, [isRadioPlaying]);
 
-  const activePlayIndex = shuffledIndices.length > 0 && currentTrackIndex >= 0 
-    ? shuffledIndices[currentTrackIndex % shuffledIndices.length] 
-    : currentTrackIndex;
-
-  // Maintain local randomized/shuffled queue indices for seamless gapless playback
-  useEffect(() => {
-    if (wawoloTracks.length > 0) {
-      setShuffledIndices(prev => {
-        if (prev.length === wawoloTracks.length) return prev;
-        const indices = Array.from({ length: wawoloTracks.length }, (_, i) => i);
-        // Fisher-Yates shuffle
-        for (let i = indices.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [indices[i], indices[j]] = [indices[j], indices[i]];
-        }
-        return indices;
-      });
-    }
-  }, [wawoloTracks]);
+  const activePlayIndex = currentTrackIndex >= 0 ? currentTrackIndex : 0;
 
   const [isOnline, setIsOnline] = useState<boolean>(() => typeof navigator !== 'undefined' ? navigator.onLine : true);
 
@@ -3093,10 +3075,8 @@ export default function App() {
           const data = await res.json();
           if (data.success) {
             loadedFromApi = true;
-            if (data.tracks && data.tracks.length > 0) {
-              setWawoloTracks(data.tracks);
-              setAllTracks(data.allTracks || data.tracks);
-            }
+            setWawoloTracks(data.tracks || []);
+            setAllTracks(data.allTracks || data.tracks || []);
             setPlaylists(data.playlists || []);
             setActivePlaylist(data.activePlaylist || null);
             setRadioPlaybackState(data.radioState);
@@ -3110,21 +3090,20 @@ export default function App() {
         }
       }
 
-      // Fallback 1: Firestore cloud database (for external hosts / mobile devices outside Google AI Studio)
-      if (!loadedFromApi || wawoloTracks.length === 0) {
+      // Fallback 1: Firestore cloud database if API failed
+      if (!loadedFromApi) {
         try {
           const { getDocs, collection: fCol, getDoc: fGetDoc } = await import('firebase/firestore');
           const snap = await getDocs(fCol(db, 'wawoloradio_tracks'));
+          const fsTracks: any[] = [];
           if (!snap.empty) {
-            const fsTracks: any[] = [];
             snap.forEach(d => fsTracks.push({ id: d.id, ...d.data() }));
             fsTracks.sort((a, b) => (a.orderIndex ?? 999) - (b.orderIndex ?? 999));
-            if (fsTracks.length > 0) {
-              setWawoloTracks(fsTracks);
-              setAllTracks(fsTracks);
-              loadedFromApi = true;
-            }
           }
+          setWawoloTracks(fsTracks);
+          setAllTracks(fsTracks);
+          loadedFromApi = true;
+
           const curDoc = await fGetDoc(doc(db, 'system_config', 'wawoloradio_curator'));
           if (curDoc.exists()) {
             const c = curDoc.data() as any;
@@ -3140,13 +3119,13 @@ export default function App() {
         }
       }
 
-      // Fallback 2: Supabase table
-      if (!loadedFromApi || wawoloTracks.length === 0) {
+      // Fallback 2: Supabase table if API and Firestore failed
+      if (!loadedFromApi) {
         try {
           const supaTracks = await fetchWawoloTracksFromSupabase();
           if (supaTracks && supaTracks.length > 0) {
-            setWawoloTracks(prev => prev.length === 0 ? supaTracks : prev);
-            setAllTracks(prev => prev.length === 0 ? supaTracks : prev);
+            setWawoloTracks(supaTracks);
+            setAllTracks(supaTracks);
           }
         } catch (sErr) {
           console.warn("[RADIO] Supabase track fetch fallback warning:", sErr);
@@ -3530,7 +3509,11 @@ export default function App() {
       const activeAudio = activeDeckTagRef.current === 'secondary' && secondaryAudioRef.current
         ? secondaryAudioRef.current
         : radioAudioRef.current;
-      if (activeAudio && isRadioPlaying) {
+      if (activeAudio && isRadioPlaying && radioPlaybackState?.isPlaying) {
+        const liveStreamElapsedSec = (radioPlaybackState.elapsedMs || 0) / 1000;
+        if (liveStreamElapsedSec > 0 && Math.abs(activeAudio.currentTime - liveStreamElapsedSec) > 1.5) {
+          activeAudio.currentTime = liveStreamElapsedSec;
+        }
         activeAudio.volume = clampVol(radioVolume);
         if (activeAudio.paused) {
           activeAudio.play().catch(err => console.warn("[RADIO] Click unblock play attempt:", err));
@@ -3545,7 +3528,7 @@ export default function App() {
       window.removeEventListener('keydown', unlockAudio);
       window.removeEventListener('click', unlockAudio);
     };
-  }, [isRadioPlaying, radioVolume]);
+  }, [isRadioPlaying, radioPlaybackState, radioVolume]);
 
   const controlRadio = async (action: "play" | "pause" | "skip" | "go-live" | "clear-live-rotation", playlistId?: string) => {
     try {
@@ -3737,20 +3720,16 @@ export default function App() {
       targetTrackIndex = 0;
     }
 
-    // Map through shuffledIndices if populated for a local shuffled stream
-    const activePlayIndex = shuffledIndices.length > 0 && targetTrackIndex >= 0 
-      ? shuffledIndices[targetTrackIndex % shuffledIndices.length] 
-      : targetTrackIndex;
+    const activePlayIndex = targetTrackIndex;
 
     const currentTrack = wawoloTracks[activePlayIndex];
 
     if (isRadioPlaying && currentTrack) {
       const targetSrc = currentTrack.url.startsWith('http') ? currentTrack.url : window.location.origin + currentTrack.url;
       
-      let startPosition = 0;
-      if (isInitialLoad || isAdminAction) {
-        startPosition = (radioPlaybackState.elapsedMs || 0) / 1000;
-      }
+      // Always continue the stream in progress from server's elapsed broadcast clock
+      const liveStreamElapsedSec = (radioPlaybackState?.elapsedMs || 0) / 1000;
+      const startPosition = Math.max(0, liveStreamElapsedSec);
 
       const activeAudio = getActiveAudio();
       const inactiveAudio = getInactiveAudio();
@@ -3769,7 +3748,8 @@ export default function App() {
             inactiveAudio.src = playableSrc;
             inactiveAudio.preload = "auto";
             
-            if (isInitialLoad || isAdminAction) {
+            // Set currentTime to server's elapsed position so new user immediately continues the stream in progress!
+            if (startPosition > 0) {
               if (inactiveAudio.readyState >= 1) {
                 inactiveAudio.currentTime = startPosition;
               } else {
@@ -3831,6 +3811,10 @@ export default function App() {
         doCrossfade();
       } else if (!isCrossfadingRef.current) {
         if (activeAudio.paused) {
+          const liveStreamElapsedSec = (radioPlaybackState?.elapsedMs || 0) / 1000;
+          if (liveStreamElapsedSec > 0 && Math.abs(activeAudio.currentTime - liveStreamElapsedSec) > 1.5) {
+            activeAudio.currentTime = liveStreamElapsedSec;
+          }
           activeAudio.volume = clampVol(radioVolume);
           activeAudio.play().catch(err => console.warn("[RADIO] Resume play failed:", err));
         }
@@ -3854,10 +3838,9 @@ export default function App() {
     }
 
     // Zero-delay background audio caching (does not disrupt playing decks)
-    if (wawoloTracks.length > 0 && shuffledIndices.length > 0) {
+    if (wawoloTracks.length > 0) {
       const nextTrackIndex = (targetTrackIndex + 1) % wawoloTracks.length;
-      const nextPlayIndex = shuffledIndices[nextTrackIndex % shuffledIndices.length];
-      const nextTrack = wawoloTracks[nextPlayIndex];
+      const nextTrack = wawoloTracks[nextTrackIndex];
       if (nextTrack) {
         const nextSrc = nextTrack.url.startsWith('http') ? nextTrack.url : window.location.origin + nextTrack.url;
         preloadAndCacheAudio(nextSrc);
