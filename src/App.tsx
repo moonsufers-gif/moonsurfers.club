@@ -3432,11 +3432,32 @@ export default function App() {
       }
     });
 
+    // Real-time Firestore listener for live platform broadcast state across all users & devices
+    const unsubRadioState = onSnapshot(doc(db, 'system_config', 'wawoloradio_state'), (snap) => {
+      if (snap.exists()) {
+        const stateData = snap.data() as any;
+        if (stateData) {
+          setRadioPlaybackState(prev => {
+            const isPlaying = typeof stateData.isPlaying === 'boolean' ? stateData.isPlaying : (prev?.isPlaying ?? false);
+            return {
+              ...prev,
+              ...stateData,
+              isPlaying
+            };
+          });
+          if (typeof stateData.currentTrackIndex === 'number' && stateData.currentTrackIndex >= 0) {
+            setCurrentTrackIndex(stateData.currentTrackIndex);
+          }
+        }
+      }
+    });
+
     return () => {
       clearInterval(interval);
       unsubSupaTracks();
       unsubCurator();
       unsubTracks();
+      unsubRadioState();
     };
   }, []);
 
@@ -3468,6 +3489,28 @@ export default function App() {
       const emailToSend = currentUser?.email || profile?.email || 'moonsufers@gmail.com';
       const handleToSend = profile?.handle || currentUser?.displayName || radioCurator?.handle || "moonsurfers";
 
+      // 1. Optimistic local state update for zero latency
+      if (action === "play" || action === "go-live") {
+        setRadioPlaybackState(prev => prev ? { ...prev, isPlaying: true } : { isPlaying: true, currentTrackIndex: 0, elapsedMs: 0 });
+        setIsRadioPlaying(true);
+      } else if (action === "pause") {
+        setRadioPlaybackState(prev => prev ? { ...prev, isPlaying: false } : { isPlaying: false, currentTrackIndex: 0, elapsedMs: 0 });
+      }
+
+      // 2. Direct Firestore broadcast update so all users on the platform receive the live status instantly
+      try {
+        await setDoc(doc(db, "system_config", "wawoloradio_state"), {
+          isPlaying: action === "play" || action === "go-live",
+          ...(playlistId ? { activePlaylistId: playlistId } : {}),
+          ...(action === "clear-live-rotation" ? { activePlaylistId: null } : {}),
+          updatedAt: new Date().toISOString(),
+          updatedBy: handleToSend
+        }, { merge: true });
+      } catch (fErr) {
+        console.warn("[RADIO] Direct Firestore state sync note:", fErr);
+      }
+
+      // 3. Node server synchronized broadcast engine
       const res = await fetch("/api/music/control", {
         method: "POST",
         headers: { 
@@ -14271,6 +14314,25 @@ export default function App() {
                 <span className="text-[10px] font-extrabold uppercase text-white tracking-widest font-grotesk">wawoloradio</span>
               </div>
               <div className="flex items-center gap-1.5">
+                {canManageRadio && (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      sounds.playSelect();
+                      controlRadio(radioPlaybackState?.isPlaying ? "pause" : "play");
+                    }}
+                    className={`px-2 py-0.5 text-[8px] font-black tracking-wider uppercase border transition-all cursor-pointer flex items-center gap-1.5 rounded-xs ${
+                      radioPlaybackState?.isPlaying
+                        ? "bg-red-600 hover:bg-red-700 text-white border-red-400 shadow-[0_0_12px_rgba(255,0,43,0.75)] animate-pulse"
+                        : "bg-zinc-800 hover:bg-red-950 text-zinc-300 hover:text-white border-white/20 hover:border-red-500"
+                    }`}
+                    title={radioPlaybackState?.isPlaying ? "WawoloRadio is broadcasting live to platform - click to pause" : "Click to go live on WawoloRadio across the platform"}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full ${radioPlaybackState?.isPlaying ? "bg-white animate-ping" : "bg-red-500"}`} />
+                    <span>{radioPlaybackState?.isPlaying ? "LIVE ON AIR" : "GO LIVE"}</span>
+                  </button>
+                )}
                 {!isOnline ? (
                   <span className="text-[7.5px] font-black uppercase tracking-wider text-amber-400 bg-amber-950/80 border border-amber-500/50 px-1.5 py-0.5 rounded-xs flex items-center gap-1 animate-pulse" title="Playing tracks from offline Cache API storage">
                     <WifiOff className="w-2.5 h-2.5 text-amber-400" /> OFFLINE CACHE
@@ -14453,8 +14515,24 @@ export default function App() {
                       )}
                     </>
                   ) : (
-                    <div className="text-[9.5px] text-zinc-500 uppercase tracking-widest animate-pulse">
-                      {!radioPlaybackState?.isPlaying ? "Broadcast Offline. Awaiting Admin." : "Radio Muted. Click Play to Tune In."}
+                    <div className="flex items-center justify-between gap-2 py-0.5">
+                      <div className="text-[9.5px] text-zinc-500 uppercase tracking-widest animate-pulse">
+                        {!radioPlaybackState?.isPlaying ? "Broadcast Offline. Awaiting Admin." : "Radio Muted. Click Play to Tune In."}
+                      </div>
+                      {canManageRadio && !radioPlaybackState?.isPlaying && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            sounds.playSelect();
+                            controlRadio("play");
+                          }}
+                          className="px-2 py-0.5 bg-red-600 hover:bg-red-500 text-white font-black text-[8px] uppercase tracking-wider rounded-xs border border-red-400 shadow-[0_0_10px_rgba(255,0,43,0.6)] animate-pulse cursor-pointer flex items-center gap-1 shrink-0"
+                          title="Start live broadcast immediately"
+                        >
+                          <Radio className="w-2.5 h-2.5" />
+                          <span>START LIVE</span>
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -14639,25 +14717,41 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* Global 24/7 Broadcast Control */}
-                <div className="bg-zinc-950 border border-white/10 p-2 mb-3 flex items-center justify-between gap-1.5 rounded-xs">
-                  <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider">Broadcast Engine:</span>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        sounds.playSelect();
-                        controlRadio(radioPlaybackState?.isPlaying ? "pause" : "play");
-                      }}
-                      className={`px-2 py-0.5 text-[8.5px] font-extrabold uppercase border cursor-pointer ${
-                        radioPlaybackState?.isPlaying 
-                          ? "bg-red-950 border-red-500 text-red-200 animate-pulse" 
-                          : "bg-zinc-900 border-white/10 text-zinc-500"
-                      }`}
-                    >
-                      {radioPlaybackState?.isPlaying ? "LIVE 24/7" : "PAUSED"}
-                    </button>
+                {/* WawoloRadio Platform Live Broadcast Engine */}
+                <div className={`p-2.5 mb-3 border rounded-xs transition-all ${
+                  radioPlaybackState?.isPlaying 
+                    ? "bg-gradient-to-r from-red-950/80 via-black to-red-950/80 border-red-500 shadow-[0_0_15px_rgba(255,0,43,0.35)]" 
+                    : "bg-zinc-950 border-white/15"
+                }`}>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`w-2.5 h-2.5 rounded-full ${radioPlaybackState?.isPlaying ? "bg-red-500 animate-ping shadow-[0_0_8px_rgba(255,0,43,1)]" : "bg-zinc-600"}`} />
+                      <span className="text-[9.5px] font-black uppercase tracking-wider text-white">
+                        {radioPlaybackState?.isPlaying ? "🔴 PLATFORM LIVE ON AIR" : "⚪ BROADCAST OFFLINE"}
+                      </span>
+                    </div>
+                    <span className="text-[7.5px] font-mono text-zinc-400 uppercase">
+                      {wawoloTracks.length} DECK TRACKS
+                    </span>
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      sounds.playSelect();
+                      controlRadio(radioPlaybackState?.isPlaying ? "pause" : "play");
+                    }}
+                    className={`w-full py-2 px-3 text-[9px] xs:text-[10px] font-black uppercase tracking-widest cursor-pointer border flex items-center justify-center gap-2 transition-all rounded-xs ${
+                      radioPlaybackState?.isPlaying
+                        ? "bg-red-600 hover:bg-red-700 text-white border-red-400 shadow-[0_0_20px_rgba(255,0,43,0.85)] animate-pulse"
+                        : "bg-zinc-900 hover:bg-red-950 text-red-400 hover:text-white border-red-500/50 hover:border-red-400 hover:shadow-[0_0_15px_rgba(255,0,43,0.4)]"
+                    }`}
+                  >
+                    <Radio className={`w-3.5 h-3.5 ${radioPlaybackState?.isPlaying ? "animate-pulse" : ""}`} />
+                    <span>
+                      {radioPlaybackState?.isPlaying ? "🔴 WAWOLORADIO LIVE (CLICK TO PAUSE)" : "⚡ START WAWOLORADIO LIVE BROADCAST"}
+                    </span>
+                  </button>
                 </div>
 
                 {/* Admin Tab Selectors */}
@@ -14688,7 +14782,7 @@ export default function App() {
                         : "bg-zinc-900 border-white/5 text-zinc-500 hover:text-zinc-300"
                     }`}
                   >
-                    🚀 Broadcast ({batchTracks.length > 0 ? `${batchTracks.length}Q` : 'Tracks'})
+                    ➕ Add Tracks
                   </button>
                   <button
                     type="button"
@@ -15183,7 +15277,7 @@ export default function App() {
                               ? `STREAMING BATCH (${batchOverallProgress}%)...`
                               : batchTracks.length > 0
                               ? `🚀 UPLOAD ALL ${batchTracks.length} TRACKS & BROADCAST LIVE NOW`
-                              : "SELECT AUDIO TRACKS TO BROADCAST"}
+                              : "SELECT AUDIO TRACKS TO UPLOAD"}
                           </span>
                         </button>
                       </div>

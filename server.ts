@@ -2514,6 +2514,19 @@ Return a rigorous JSON object matching this schema exactly:
       }
 
       const currentPlayback = getRadioPlaybackState(activeTracks);
+
+      // Persist radio state to Firestore for real-time instantaneous sync across the whole platform
+      try {
+        await db.collection("system_config").doc("wawoloradio_state").set({
+          ...currentPlayback,
+          activePlaylistId: radioState.activePlaylistId || null,
+          isPlaying: radioState.isPlaying,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (fErr) {
+        console.warn("[MUSIC API] Firestore state sync warning:", fErr);
+      }
+
       res.json({ success: true, radioState: currentPlayback });
     } catch (err: any) {
       console.error("[MUSIC API] Control error:", err);
