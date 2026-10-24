@@ -2719,6 +2719,28 @@ Return a rigorous JSON object matching this schema exactly:
       await db.collection("wawoloradio_tracks").doc(trackId).set(trackData);
       invalidateTracksCache();
 
+      // Immediately activate live broadcast of this freshly uploaded track
+      radioState.isPlaying = true;
+      radioState.currentTrackId = trackId;
+      radioState.currentTrackIndex = 0;
+      radioState.trackStartedAt = Date.now();
+
+      try {
+        await db.collection("system_config").doc("wawoloradio_state").set({
+          isPlaying: true,
+          currentTrackIndex: 0,
+          currentTrackId: trackId,
+          elapsedMs: 0,
+          durationMs: (duration || 180) * 1000,
+          activePlaylistId: radioState.activePlaylistId || null,
+          updatedAt: new Date().toISOString(),
+          updatedBy: handle || email || "@inene233"
+        }, { merge: true });
+        console.log(`[MUSIC API] Live broadcast activated on-air for track ${trackId}`);
+      } catch (stErr) {
+        console.warn("[MUSIC API] State sync warning on upload:", stErr);
+      }
+
       // Back up to Firestore chunks asynchronously in background
       (async () => {
         try {
@@ -2777,8 +2799,18 @@ Return a rigorous JSON object matching this schema exactly:
         console.warn('[SUPABASE] Music sync error:', e);
       }
 
-      console.log(`[MUSIC API] Binary audio track ${trackId} uploaded successfully (${buffer.length} bytes).`);
-      res.json({ success: true, track: trackData });
+      console.log(`[MUSIC API] Binary audio track ${trackId} uploaded successfully (${buffer.length} bytes). Broadcasting live.`);
+      res.json({ 
+        success: true, 
+        track: trackData,
+        radioState: {
+          isPlaying: true,
+          currentTrackIndex: 0,
+          currentTrackId: trackId,
+          elapsedMs: 0,
+          durationMs: (duration || 180) * 1000
+        }
+      });
     } catch (err: any) {
       console.error("[MUSIC API] Binary upload error:", err);
       res.status(500).json({ success: false, error: err.message || "Failed to upload audio file" });
@@ -3024,6 +3056,29 @@ Return a rigorous JSON object matching this schema exactly:
 
       await db.collection("wawoloradio_tracks").doc(trackId).set(trackData);
       invalidateTracksCache();
+
+      // Automatically activate live broadcast of this new track
+      radioState.isPlaying = true;
+      radioState.currentTrackId = trackId;
+      radioState.currentTrackIndex = 0;
+      radioState.trackStartedAt = Date.now();
+
+      try {
+        await db.collection("system_config").doc("wawoloradio_state").set({
+          isPlaying: true,
+          currentTrackIndex: 0,
+          currentTrackId: trackId,
+          elapsedMs: 0,
+          durationMs: (trackData.duration || 180) * 1000,
+          activePlaylistId: radioState.activePlaylistId || null,
+          updatedAt: new Date().toISOString(),
+          updatedBy: handle || email || "@inene233"
+        }, { merge: true });
+        console.log(`[MUSIC API] Live broadcast activated on-air for track ${trackId}`);
+      } catch (stErr) {
+        console.warn("[MUSIC API] State sync warning on add:", stErr);
+      }
+
       try {
         void (async () => {
           try {
@@ -3046,7 +3101,17 @@ Return a rigorous JSON object matching this schema exactly:
       } catch (e) {
         console.warn('[SUPABASE] Music sync error:', e);
       }
-      res.json({ success: true, track: trackData });
+      res.json({ 
+        success: true, 
+        track: trackData,
+        radioState: {
+          isPlaying: true,
+          currentTrackIndex: 0,
+          currentTrackId: trackId,
+          elapsedMs: 0,
+          durationMs: (trackData.duration || 180) * 1000
+        }
+      });
     } catch (err: any) {
       console.error("[MUSIC API] Add track error:", err);
       res.status(500).json({ success: false, error: err.message });

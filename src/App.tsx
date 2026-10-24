@@ -2621,85 +2621,64 @@ export default function App() {
       setBatchStatusMessage(`[${i + 1}/${totalCount}] Streaming "${item.title.toUpperCase()}"...`);
 
       try {
-        let duration = item.duration || 180;
-        let fileToUpload: Blob = item.file;
-        if (compressPreset !== "none") {
-          const targetHz = compressPreset === "lofi" ? 16000 : 22050;
-          try {
-            fileToUpload = await compressAudioFile(item.file, targetHz);
-          } catch (compErr) {
-            console.warn("Client compression skipped:", compErr);
-          }
-        }
-
+        const duration = item.duration || 180;
+        const fileToUpload: Blob = item.file;
         const trackId = `track_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
         let uploadedTrackData: any = null;
 
-        // Attempt 1: Direct Client-to-Supabase Cloud Storage (0 tokens burned)
+        // Primary Fast Upload: Direct raw binary audio stream to Node server
         try {
-          const supabaseUrl = await uploadMusicFileToSupabase(fileToUpload, trackId);
-          if (supabaseUrl) {
-            uploadedTrackData = {
-              id: trackId,
-              title: item.title.trim() || item.file.name,
-              artist: item.artist.trim() || radioCurator?.name || "MOONSURFERS",
-              url: supabaseUrl,
-              isUploaded: true,
-              duration,
-              uploadedBy: handleToSend,
-              uploadedAt: new Date().toISOString(),
-              orderIndex: wawoloTracks.length + i
-            };
-
-            try { await syncWawoloTrackToSupabase(uploadedTrackData); } catch (e) {}
-            try { await setDoc(doc(db, "wawoloradio_tracks", trackId), uploadedTrackData); } catch (e) {}
-            try {
-              fetch("/api/music/add", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  title: uploadedTrackData.title,
-                  artist: uploadedTrackData.artist,
-                  externalUrl: supabaseUrl,
-                  duration,
-                  email: emailToSend,
-                  handle: handleToSend
-                })
-              }).catch(() => {});
-            } catch (e) {}
+          setBatchTracks(curr => curr.map(t => t.id === item.id ? { ...t, progress: 40 } : t));
+          const qParams = new URLSearchParams({
+            trackId,
+            title: item.title.trim(),
+            artist: item.artist.trim() || radioCurator?.name || "MOONSURFERS",
+            duration: duration.toString(),
+            email: emailToSend,
+            handle: handleToSend,
+            mimeType: item.file.type || "audio/mpeg"
+          });
+          const srvRes = await fetch(`/api/music/upload-file?${qParams.toString()}`, {
+            method: "POST",
+            headers: {
+              "Content-Type": item.file.type || "audio/mpeg",
+              "x-admin-key": "moonsurfers",
+              "x-dj-auth": "true",
+              "x-admin-handle": handleToSend,
+              "x-admin-email": emailToSend
+            },
+            body: fileToUpload
+          });
+          const parsedSrv = await safeParseJsonResponse(srvRes);
+          if (parsedSrv.success && parsedSrv.data?.track) {
+            uploadedTrackData = parsedSrv.data.track;
           }
-        } catch (supaErr) {
-          console.warn("[BATCH] Supabase upload attempt note:", supaErr);
+        } catch (srvErr) {
+          console.warn("[BATCH] Direct stream upload error:", srvErr);
         }
 
-        // Attempt 2: Server-side stream upload endpoint
+        // Secondary Fallback: Supabase Storage if server stream was unreachable
         if (!uploadedTrackData) {
           try {
-            const qParams = new URLSearchParams({
-              trackId,
-              title: item.title.trim(),
-              artist: item.artist.trim(),
-              duration: duration.toString(),
-              email: emailToSend,
-              handle: handleToSend,
-              mimeType: fileToUpload.type || "audio/mpeg"
-            });
-            const srvRes = await fetch(`/api/music/upload-file?${qParams.toString()}`, {
-              method: "POST",
-              headers: {
-                "Content-Type": fileToUpload.type || "audio/mpeg",
-                "x-admin-key": "moonsurfers",
-                "x-dj-auth": "true",
-                "x-admin-handle": handleToSend,
-                "x-admin-email": emailToSend
-              },
-              body: fileToUpload
-            });
-            const parsedSrv = await safeParseJsonResponse(srvRes);
-            if (parsedSrv.success && parsedSrv.data?.track) {
-              uploadedTrackData = parsedSrv.data.track;
+            const supabaseUrl = await uploadMusicFileToSupabase(fileToUpload, trackId);
+            if (supabaseUrl) {
+              uploadedTrackData = {
+                id: trackId,
+                title: item.title.trim() || item.file.name,
+                artist: item.artist.trim() || radioCurator?.name || "MOONSURFERS",
+                url: supabaseUrl,
+                isUploaded: true,
+                duration,
+                uploadedBy: handleToSend,
+                uploadedAt: new Date().toISOString(),
+                orderIndex: wawoloTracks.length + i
+              };
+              try { await syncWawoloTrackToSupabase(uploadedTrackData); } catch (e) {}
+              try { await setDoc(doc(db, "wawoloradio_tracks", trackId), uploadedTrackData); } catch (e) {}
             }
-          } catch (srvErr) {}
+          } catch (supaErr) {
+            console.warn("[BATCH] Supabase upload attempt note:", supaErr);
+          }
         }
 
         // Attempt 3: Portable Base64 data URL
@@ -14449,11 +14428,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Powered by line */}
-            <div className="text-[9px] text-white/65 font-bold mb-2 tracking-wider lowercase">
-              Soundtrack Powered By wawoloradio.
-            </div>
-
             {/* Music Curator / DJ Section */}
             <div className="bg-red-950/20 border border-red-500/20 p-2 mb-2.5 rounded-xs relative">
               <div className="flex items-center justify-between gap-2">
@@ -15148,43 +15122,6 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* Batch Configuration Options */}
-                        <div className="bg-black/60 border border-white/10 p-2 space-y-1.5 rounded-xs font-mono text-[8px]">
-                          <label className="flex items-center gap-2 cursor-pointer select-none text-zinc-200">
-                            <input
-                              type="checkbox"
-                              checked={autoBroadcastOnUpload}
-                              onChange={(e) => setAutoBroadcastOnUpload(e.target.checked)}
-                              className="accent-red-500"
-                            />
-                            <span className="font-bold text-red-300 uppercase">
-                              ⚡ Auto-Broadcast to Airwaves Immediately Upon Upload
-                            </span>
-                          </label>
-
-                          <label className="flex items-center gap-2 cursor-pointer select-none text-zinc-300">
-                            <input
-                              type="checkbox"
-                              checked={createPlaylistFromBatch}
-                              onChange={(e) => setCreatePlaylistFromBatch(e.target.checked)}
-                              className="accent-red-500"
-                            />
-                            <span className="uppercase">
-                              📅 Package into a Scheduled Live Rotation Playlist
-                            </span>
-                          </label>
-
-                          {createPlaylistFromBatch && (
-                            <input
-                              type="text"
-                              placeholder="Rotation Playlist Name (e.g., NIGHT SKATE HITLIST)..."
-                              value={batchPlaylistName}
-                              onChange={(e) => setBatchPlaylistName(e.target.value)}
-                              className="w-full bg-black border border-red-500/50 text-white p-1 text-[8.5px] uppercase outline-none font-mono mt-1"
-                            />
-                          )}
-                        </div>
-
                         {/* Batch Queue Table */}
                         {batchTracks.length > 0 && (
                           <div className="space-y-1">
@@ -15321,194 +15258,99 @@ export default function App() {
 
                           setIsUploadingTrack(true);
                           setUploadTrackError(null);
-                          setUploadProgress(5);
-                          setUploadStatusStep("Preparing audio payload...");
+                          setUploadProgress(10);
+                          setUploadStatusStep("Starting broadcast transmission...");
                           
                           try {
                             const emailToSend = currentUser?.email || profile?.email || (profile?.handle?.toLowerCase().includes('inene') ? 'inenepadi@gmail.com' : 'moonsufers@gmail.com');
                             const handleToSend = profile?.handle || currentUser?.displayName || radioCurator?.handle || 'inene233';
 
                             let duration = 180;
+                            let uploadedTrackData: any = null;
 
                             if (newTrackFile) {
-                              setUploadProgress(10);
-                              setUploadStatusStep("Reading audio duration...");
+                              setUploadProgress(25);
+                              setUploadStatusStep("Reading audio metadata...");
                               try {
                                 const tempAudio = new Audio();
-                                tempAudio.src = URL.createObjectURL(newTrackFile);
+                                const objUrl = URL.createObjectURL(newTrackFile);
+                                tempAudio.src = objUrl;
                                 await new Promise<void>((resolve) => {
-                                  const timer = setTimeout(() => resolve(), 3000);
+                                  const timer = setTimeout(() => {
+                                    URL.revokeObjectURL(objUrl);
+                                    resolve();
+                                  }, 1200);
                                   tempAudio.onloadedmetadata = () => {
                                     clearTimeout(timer);
                                     if (tempAudio.duration && !isNaN(tempAudio.duration)) {
                                       duration = Math.round(tempAudio.duration);
                                     }
+                                    URL.revokeObjectURL(objUrl);
                                     resolve();
                                   };
                                   tempAudio.onerror = () => {
                                     clearTimeout(timer);
+                                    URL.revokeObjectURL(objUrl);
                                     resolve();
                                   };
                                 });
-                              } catch (e) {
-                                console.warn("Could not determine duration:", e);
-                              }
-
-                              let fileToUpload: Blob = newTrackFile;
-                              if (compressPreset !== "none") {
-                                const targetHz = compressPreset === "lofi" ? 16000 : 22050;
-                                setUploadStatusStep(`Compressing stream to ${targetHz / 1000}kHz...`);
-                                try {
-                                  fileToUpload = await compressAudioFile(newTrackFile, targetHz);
-                                } catch (compErr: any) {
-                                  console.warn("Client-side compression skipped, uploading original:", compErr);
-                                }
-                              }
+                              } catch (e) {}
 
                               const trackId = `track_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-                              let uploadedTrackData: any = null;
+                              setUploadProgress(50);
+                              setUploadStatusStep("Fast streaming audio to server...");
 
-                              // 1. FIRST ATTEMPT: Direct Client-to-Supabase Cloud Storage (0 tokens burned)
-                              setUploadProgress(20);
-                              setUploadStatusStep("Uploading directly to Supabase Storage (0 tokens burned)...");
-                              try {
-                                const supabaseUrl = await uploadMusicFileToSupabase(fileToUpload, trackId);
+                              // High-speed direct binary upload
+                              const qParams = new URLSearchParams({
+                                trackId,
+                                title: newTrackTitle.trim(),
+                                artist: newTrackArtist.trim(),
+                                duration: duration.toString(),
+                                email: emailToSend,
+                                handle: handleToSend,
+                                mimeType: newTrackFile.type || "audio/mpeg"
+                              });
+
+                              const singleRes = await fetch(`/api/music/upload-file?${qParams.toString()}`, {
+                                method: "POST",
+                                headers: { 
+                                  "Content-Type": newTrackFile.type || "audio/mpeg",
+                                  "x-admin-key": "moonsurfers",
+                                  "x-dj-auth": "true",
+                                  "x-admin-handle": handleToSend,
+                                  "x-admin-email": emailToSend
+                                },
+                                body: newTrackFile
+                              });
+
+                              const parsedSingle = await safeParseJsonResponse(singleRes);
+                              if (parsedSingle.success && parsedSingle.data?.track) {
+                                uploadedTrackData = parsedSingle.data.track;
+                              } else {
+                                // Fallback to Supabase if local server upload failed
+                                const supabaseUrl = await uploadMusicFileToSupabase(newTrackFile, trackId);
                                 if (supabaseUrl) {
-                                  setUploadProgress(85);
-                                  setUploadStatusStep("Saving track to Supabase & Community Playlist...");
-
                                   uploadedTrackData = {
                                     id: trackId,
                                     title: newTrackTitle.trim(),
                                     artist: newTrackArtist.trim(),
                                     url: supabaseUrl,
                                     isUploaded: true,
-                                    duration: duration || 180,
+                                    duration,
                                     uploadedBy: handleToSend,
                                     uploadedAt: new Date().toISOString()
                                   };
-
-                                  try { await syncWawoloTrackToSupabase(uploadedTrackData); } catch (err) {}
-                                  try { await setDoc(doc(db, "wawoloradio_tracks", trackId), uploadedTrackData); } catch (err) {}
-                                  try {
-                                    fetch("/api/music/add", {
-                                      method: "POST",
-                                      headers: { "Content-Type": "application/json" },
-                                      body: JSON.stringify({
-                                        title: newTrackTitle.trim(),
-                                        artist: newTrackArtist.trim(),
-                                        externalUrl: supabaseUrl,
-                                        duration,
-                                        email: emailToSend,
-                                        handle: handleToSend
-                                      })
-                                    }).catch(() => {});
-                                  } catch (e) {}
+                                  await syncWawoloTrackToSupabase(uploadedTrackData).catch(() => {});
+                                  await setDoc(doc(db, "wawoloradio_tracks", trackId), uploadedTrackData).catch(() => {});
                                 }
-                              } catch (supaErr) {
-                                console.warn("[RADIO] Supabase direct upload fallback:", supaErr);
                               }
-
-                              // 2. SECOND ATTEMPT: Server-side stream endpoints
-                              if (!uploadedTrackData) {
-                                try {
-                                  setUploadProgress(40);
-                                  setUploadStatusStep("Streaming to server...");
-                                  const qParams = new URLSearchParams({
-                                    trackId,
-                                    title: newTrackTitle.trim(),
-                                    artist: newTrackArtist.trim(),
-                                    duration: duration.toString(),
-                                    email: emailToSend,
-                                    handle: handleToSend,
-                                    mimeType: fileToUpload.type || "audio/mpeg"
-                                  });
-
-                                  const singleRes = await fetch(`/api/music/upload-file?${qParams.toString()}`, {
-                                    method: "POST",
-                                    headers: { 
-                                      "Content-Type": fileToUpload.type || "audio/mpeg",
-                                      "x-admin-key": "moonsurfers",
-                                      "x-dj-auth": "true",
-                                      "x-admin-handle": handleToSend,
-                                      "x-admin-email": emailToSend
-                                    },
-                                    body: fileToUpload
-                                  });
-
-                                  const parsedSingle = await safeParseJsonResponse(singleRes);
-                                  if (parsedSingle.success && parsedSingle.data?.track) {
-                                    uploadedTrackData = parsedSingle.data.track;
-                                  }
-                                } catch (srvErr: any) {}
-                              }
-
-                              // 3. THIRD ATTEMPT: Portable stream data URL
-                              if (!uploadedTrackData) {
-                                setUploadProgress(75);
-                                setUploadStatusStep("Packaging portable stream for mobile...");
-                                try {
-                                  const dataUrl = await new Promise<string>((resolve) => {
-                                    const reader = new FileReader();
-                                    reader.onload = () => resolve(reader.result as string);
-                                    reader.onerror = () => resolve('');
-                                    reader.readAsDataURL(fileToUpload);
-                                  });
-
-                                  if (dataUrl && (dataUrl.startsWith('data:audio/') || dataUrl.includes('base64,'))) {
-                                    const finalPlayableUrl = dataUrl.startsWith('data:audio/')
-                                      ? dataUrl
-                                      : dataUrl.replace(/^data:[^;]*;base64,/, 'data:audio/mpeg;base64,');
-
-                                    uploadedTrackData = {
-                                      id: trackId,
-                                      title: newTrackTitle.trim(),
-                                      artist: newTrackArtist.trim(),
-                                      url: finalPlayableUrl,
-                                      isUploaded: true,
-                                      duration: duration || 180,
-                                      uploadedBy: handleToSend,
-                                      uploadedAt: new Date().toISOString()
-                                    };
-
-                                    try { await syncWawoloTrackToSupabase(uploadedTrackData); } catch (e) {}
-                                    try { await setDoc(doc(db, "wawoloradio_tracks", trackId), uploadedTrackData); } catch (e) {}
-                                  }
-                                } catch (e) {}
-                              }
-
-                              if (!uploadedTrackData) {
-                                throw new Error("Could not store audio stream. Please check connection.");
-                              }
-
-                              setUploadProgress(100);
-                              setUploadStatusStep("CONFIRMED! Broadcast verified & live (0 tokens used).");
-                              setVerifiedUploadedTrack(uploadedTrackData);
-
-                              // Auto-broadcast on-air immediately
-                              if (autoBroadcastOnUpload) {
-                                try {
-                                  await controlRadio("play");
-                                  if (!isRadioPlaying) setIsRadioPlaying(true);
-                                } catch (e) {}
-                              }
-
-                              addTickerMessage(`[RADIO] BROADCASTED & LIVE: ${newTrackTitle.toUpperCase()}`);
-                              addNotification('system', 'RADIO RECRUIT', `"${newTrackTitle.toUpperCase()}" verified (0 tokens burned) and live on airwaves.`);
-
-                              setNewTrackTitle('');
-                              setNewTrackArtist('');
-                              setNewTrackUrl('');
-                              setNewTrackFile(null);
-
-                              await fetchWawoloTracks();
                             } else {
                               // Direct stream link
                               setUploadProgress(50);
                               setUploadStatusStep("Registering direct stream link...");
-                              
+                              const trackId = `track_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
                               const newTrackObj = {
-                                id: `track_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
+                                id: trackId,
                                 title: newTrackTitle.trim(),
                                 artist: newTrackArtist.trim(),
                                 url: newTrackUrl.trim(),
@@ -15518,11 +15360,11 @@ export default function App() {
                                 uploadedAt: new Date().toISOString()
                               };
 
-                              try { await syncWawoloTrackToSupabase(newTrackObj); } catch (e) {}
-                              try { await setDoc(doc(db, "wawoloradio_tracks", newTrackObj.id), newTrackObj); } catch (e) {}
+                              await syncWawoloTrackToSupabase(newTrackObj).catch(() => {});
+                              await setDoc(doc(db, "wawoloradio_tracks", newTrackObj.id), newTrackObj).catch(() => {});
 
                               try {
-                                fetch("/api/music/add", {
+                                const addRes = await fetch("/api/music/add", {
                                   method: "POST",
                                   headers: { "Content-Type": "application/json" },
                                   body: JSON.stringify({
@@ -15533,19 +15375,72 @@ export default function App() {
                                     email: emailToSend,
                                     handle: handleToSend
                                   })
-                                }).catch(() => {});
-                              } catch (e) {}
-
-                              setUploadProgress(100);
-                              setUploadStatusStep("CONFIRMED! Stream registered.");
-                              setVerifiedUploadedTrack(newTrackObj);
-                              addTickerMessage(`[RADIO] BROADCASTED STREAM: ${newTrackTitle.toUpperCase()}`);
-                              addNotification('system', 'RADIO RECRUIT', `"${newTrackTitle.toUpperCase()}" added to rotation.`);
-                              setNewTrackTitle('');
-                              setNewTrackArtist('');
-                              setNewTrackUrl('');
-                              await fetchWawoloTracks();
+                                });
+                                const parsedAdd = await safeParseJsonResponse(addRes);
+                                if (parsedAdd.success && parsedAdd.data?.track) {
+                                  uploadedTrackData = parsedAdd.data.track;
+                                } else {
+                                  uploadedTrackData = newTrackObj;
+                                }
+                              } catch (e) {
+                                uploadedTrackData = newTrackObj;
+                              }
                             }
+
+                            if (!uploadedTrackData) {
+                              throw new Error("Could not store audio stream. Please check connection.");
+                            }
+
+                            setUploadProgress(100);
+
+                            // IMMEDIATELY PLAY & BROADCAST TO ALL USERS AND GUESTS
+                            const finalTrack = uploadedTrackData;
+                            setWawoloTracks(prev => [finalTrack, ...prev.filter(t => t.id !== finalTrack.id)]);
+                            setAllTracks(prev => [finalTrack, ...prev.filter(t => t.id !== finalTrack.id)]);
+                            setCurrentTrackIndex(0);
+                            setIsRadioPlaying(true);
+                            setRadioPlaybackState({
+                              isPlaying: true,
+                              currentTrackIndex: 0,
+                              currentTrackId: finalTrack.id,
+                              elapsedMs: 0,
+                              durationMs: (finalTrack.duration || 180) * 1000,
+                              activePlaylistId: null
+                            });
+
+                            // Directly update live broadcast status in Firestore so all connected listeners & guests instantly pick up the song
+                            try {
+                              await setDoc(doc(db, "system_config", "wawoloradio_state"), {
+                                isPlaying: true,
+                                currentTrackIndex: 0,
+                                currentTrackId: finalTrack.id,
+                                elapsedMs: 0,
+                                durationMs: (finalTrack.duration || 180) * 1000,
+                                activePlaylistId: null,
+                                updatedAt: new Date().toISOString(),
+                                updatedBy: handleToSend
+                              }, { merge: true });
+                            } catch (fErr) {}
+
+                            // Trigger immediate audio playback on local deck
+                            try {
+                              const activeAudio = (activeDeckTagRef.current === 'primary' ? radioAudioRef.current : secondaryAudioRef.current) || radioAudioRef.current;
+                              if (activeAudio) {
+                                activeAudio.src = finalTrack.url;
+                                activeAudio.currentTime = 0;
+                                activeAudio.volume = radioVolume;
+                                activeAudio.play().catch(() => {});
+                              }
+                            } catch (aErr) {}
+
+                            addTickerMessage(`[RADIO] 🔴 NOW BROADCASTING LIVE: ${finalTrack.title.toUpperCase()} BY ${finalTrack.artist.toUpperCase()}`);
+                            sounds.playTrickSuccess();
+
+                            setNewTrackTitle('');
+                            setNewTrackArtist('');
+                            setNewTrackUrl('');
+                            setNewTrackFile(null);
+                            await fetchWawoloTracks();
                           } catch (err: any) {
                             setUploadTrackError(err.message || "Failed to add track");
                             setUploadStatusStep("");
@@ -15555,49 +15450,6 @@ export default function App() {
                         }} 
                         className="space-y-2 mb-2"
                       >
-                        {/* VERIFIED TRACK CONFIRMATION BADGE */}
-                        {verifiedUploadedTrack && !isUploadingTrack && (
-                          <div className="bg-emerald-950/70 border border-emerald-500/60 p-2 text-[8.5px] font-mono space-y-1.5 rounded-xs animate-in fade-in duration-200">
-                            <div className="flex items-center justify-between text-emerald-400 font-bold uppercase tracking-wide">
-                              <span className="flex items-center gap-1.5">
-                                <span className="text-base leading-none">✅</span>
-                                <span>TRANSMISSION CONFIRMED ON SERVER</span>
-                              </span>
-                              <span className="text-[7px] bg-emerald-500/20 px-1.5 py-0.5 border border-emerald-500/40 font-black">
-                                AVAILABLE FOR PLAYBACK
-                              </span>
-                            </div>
-                            <div className="text-zinc-200 text-[8px] pl-5">
-                              <span className="text-white font-black">{verifiedUploadedTrack.title}</span> — {verifiedUploadedTrack.artist} ({verifiedUploadedTrack.duration || 180}s)
-                            </div>
-                            <div className="flex items-center gap-2 pt-1 pl-5">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  sounds.playSelect();
-                                  const idx = wawoloTracks.findIndex(t => t.id === verifiedUploadedTrack.id);
-                                  if (idx >= 0) {
-                                    setCurrentTrackIndex(idx);
-                                  }
-                                  if (!isRadioPlaying) {
-                                    setIsRadioPlaying(true);
-                                  }
-                                  addTickerMessage(`[RADIO] NOW BROADCASTING: ${verifiedUploadedTrack.title.toUpperCase()}`);
-                                }}
-                                className="px-2.5 py-1 bg-emerald-500 hover:bg-emerald-400 text-black font-extrabold uppercase text-[8px] cursor-pointer flex items-center gap-1 shadow-sm transition-all active:scale-95"
-                              >
-                                <Play className="w-2.5 h-2.5 fill-current" /> PLAY ON-AIR NOW
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setVerifiedUploadedTrack(null)}
-                                className="px-2 py-1 bg-black/60 border border-white/20 text-zinc-400 hover:text-white uppercase text-[7.5px] cursor-pointer font-mono"
-                              >
-                                DISMISS
-                              </button>
-                            </div>
-                          </div>
-                        )}
 
                         <div className="grid grid-cols-2 gap-1.5">
                           <input
@@ -15675,10 +15527,10 @@ export default function App() {
                             <div className="text-[8.5px] text-zinc-300 uppercase font-mono">
                               {newTrackFile ? (
                                 <span className="text-white font-bold">
-                                  📁 {newTrackFile.name} ({(newTrackFile.size / (1024 * 1024)).toFixed(2)} MB — NO CAP)
+                                  📁 {newTrackFile.name} ({(newTrackFile.size / (1024 * 1024)).toFixed(2)} MB)
                                 </span>
                               ) : (
-                                "Click / Drag Audio File (MP3, WAV, M4A, FLAC — NO CAP)"
+                                "Select Audio File (MP3, WAV, M4A, FLAC)"
                               )}
                             </div>
                           </div>
