@@ -124,9 +124,7 @@ import {
   deleteWawoloTrackFromSupabase,
   fetchWawoloTracksFromSupabase,
   subscribeToSupabaseTracks,
-  uploadMusicFileToSupabase,
-  signUpWithSupabase,
-  signInWithSupabase
+  uploadMusicFileToSupabase
 } from './lib/supabase';
 
 import { 
@@ -4871,14 +4869,34 @@ export default function App() {
   // Firebase Auth Listener
   // ==========================================
   useEffect(() => {
-    // Check for cached guest profile
+    // Check for cached session or guest profile
+    const cachedAuthStr = localStorage.getItem('moonsurfers_auth_session');
     const cachedGuest = localStorage.getItem('moonsurfers_guest_profile');
     
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
-        // Authenticated skater
+        // Authenticated skater via Firebase Auth
         setCurrentUser({ uid: firebaseUser.uid, email: firebaseUser.email || '', isGuest: false });
         await fetchOrCreateUserProfile(firebaseUser.uid, firebaseUser.email || '', firebaseUser.displayName || 'Nomad');
+      } else if (cachedAuthStr) {
+        // Fallback authenticated session (e.g., when browsing in restricted iframe sandbox)
+        try {
+          const parsed = JSON.parse(cachedAuthStr);
+          if (parsed && parsed.uid) {
+            setCurrentUser({ uid: parsed.uid, email: parsed.email || '', isGuest: false });
+            if (parsed.profile) {
+              const validated = await validateAndVerifyStreak(parsed.profile);
+              setProfile(validated);
+              if (validated.activeLocation?.districtId) {
+                setCurrentDistrictId(validated.activeLocation.districtId);
+              }
+            } else {
+              await fetchOrCreateUserProfile(parsed.uid, parsed.email || '', 'Nomad');
+            }
+          }
+        } catch (e) {
+          localStorage.removeItem('moonsurfers_auth_session');
+        }
       } else if (cachedGuest) {
         // Fallback guest authenticated state (Local client profile only - guests do not get a database document)
         try {
@@ -5282,40 +5300,65 @@ export default function App() {
         addTickerMessage(`[INTELLIGENCE RELEASED] NEW SECTOR ENLISTED: [${cleanId}]`);
       }
 
-      // Create Auth user (Firebase Auth with Supabase Auth fallback)
+      // Create Auth user via Server Auth Proxy (bulletproof in sandbox / iframe environments)
       let uid = '';
       let isExistingUserLoggedIn = false;
+      let existingProfileFromLogin: any = null;
+
       try {
-        const credential = await createUserWithEmailAndPassword(auth, emailInput.trim(), passwordInput);
-        uid = credential.user.uid;
-      } catch (authErr: any) {
-        console.warn("Firebase Auth error during sign-up:", authErr?.message);
-        if (authErr?.code === 'auth/email-already-in-use') {
-          // Attempt seamless authentication with the provided credentials
-          try {
-            const loginCredential = await signInWithEmailAndPassword(auth, emailInput.trim(), passwordInput);
-            uid = loginCredential.user.uid;
-            isExistingUserLoggedIn = true;
-            console.log("Account already registered: successfully authenticated with existing credentials.");
-          } catch (signInErr: any) {
-            setAuthTab('login');
-            throw authErr;
+        const sRes = await fetch('/api/auth/sign-up', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: emailInput.trim(), password: passwordInput, handle: cleanHandle })
+        });
+        const sData = await sRes.json();
+
+        if (sData.success) {
+          uid = sData.uid;
+          if (sData.idToken) {
+            localStorage.setItem('moonsurfers_auth_token', sData.idToken);
           }
+          if (sData.isExistingUser) {
+            isExistingUserLoggedIn = true;
+            existingProfileFromLogin = sData.profile || null;
+          }
+        } else if (sData.error === 'EMAIL_EXISTS') {
+          // Switch tab to login smoothly
+          setAuthTab('login');
+          setAuthError("This email is already registered. Switched to Log In tab — enter your password to sign in.");
+          return;
+        } else if (sData.error === 'HANDLE_EXISTS') {
+          setAuthError(sData.message || `Outlaw handle "@${cleanHandle}" is already claimed.`);
+          return;
         } else {
-          // Attempt Supabase Auth fallback
-          const supaUser = await signUpWithSupabase(emailInput.trim(), passwordInput, cleanHandle);
-          if (supaUser && supaUser.id) {
-            uid = supaUser.id;
+          setAuthError(sData.message || "Failed to enlist skater account.");
+          return;
+        }
+      } catch (proxyNetErr) {
+        console.warn("[SIGNUP] Auth proxy network fallback to client SDK:", proxyNetErr);
+        // Fallback to client Firebase Auth if local server proxy unreachable
+        try {
+          const credential = await createUserWithEmailAndPassword(auth, emailInput.trim(), passwordInput);
+          uid = credential.user.uid;
+        } catch (authErr: any) {
+          if (authErr?.code === 'auth/email-already-in-use') {
+            try {
+              const loginCredential = await signInWithEmailAndPassword(auth, emailInput.trim(), passwordInput);
+              uid = loginCredential.user.uid;
+              isExistingUserLoggedIn = true;
+            } catch (autoLoginErr) {
+              setAuthTab('login');
+              setAuthError("This email is already registered. Switched to Log In tab — enter your password to sign in.");
+              return;
+            }
           } else {
-            // If auth server is restricted/sandboxed, generate stable local outlaw UID
-            uid = `outlaw_${cleanHandle}_${Date.now()}`;
+            throw authErr;
           }
         }
       }
 
       if (isExistingUserLoggedIn) {
-        // Load existing user profile instead of overwriting with initial blank profile
-        const existingProfile = await getSkaterProfile(uid);
+        const existingProfile = existingProfileFromLogin || await getSkaterProfile(uid);
         if (existingProfile) {
           const validated = await validateAndVerifyStreak(existingProfile);
           setCurrentUser({ uid, email: emailInput.trim(), isGuest: false });
@@ -5323,16 +5366,17 @@ export default function App() {
           if (validated.activeLocation?.districtId) {
             setCurrentDistrictId(validated.activeLocation.districtId);
           }
+          localStorage.setItem('moonsurfers_auth_session', JSON.stringify({ uid, email: emailInput.trim(), isGuest: false, profile: validated }));
           sounds.playTrickSuccess();
           addTickerMessage(`AUTHENTICATED: Welcome back @${(validated.handle || cleanHandle).toUpperCase()}!`);
           return;
         }
       }
 
-      // Create users database profile
+      // Create or update users database profile
       const userProfile = await createInitialProfile(uid, emailInput.trim(), cleanHandle);
       let finalProfile = userProfile;
-      
+
       // Update custom district profile if registered
       if (sectorIdToSet) {
         const activeLoc: ActiveLocation = {
@@ -5350,6 +5394,10 @@ export default function App() {
       const validated = await validateAndVerifyStreak(finalProfile);
       setCurrentUser({ uid, email: emailInput.trim(), isGuest: false });
       setProfile(validated);
+      localStorage.setItem('moonsurfers_auth_session', JSON.stringify({ uid, email: emailInput.trim(), isGuest: false, profile: validated }));
+
+      // Also sync client Firebase SDK in background if supported in this environment
+      createUserWithEmailAndPassword(auth, emailInput.trim(), passwordInput).catch(() => {});
 
       // Immediately add new skater to allSkaters list in real-time
       setAllSkaters((prev) => {
@@ -5360,17 +5408,15 @@ export default function App() {
       sounds.playTrickSuccess();
       addTickerMessage(`NEW SKATER ENLISTED: Welcome @${cleanHandle.toUpperCase()} to the network!`);
     } catch (err: any) {
-      console.error("SignUp Error:", err);
+      console.warn("SignUp warning:", err?.message || err);
       const code = err?.code || '';
-      if (code === 'auth/email-already-in-use') {
+      if (code === 'auth/email-already-in-use' || err?.message?.includes('already-in-use') || err?.message?.includes('already registered')) {
         setAuthTab('login');
         setAuthError("This email is already registered. Switched to Log In tab — enter your password to sign in.");
       } else if (code === 'auth/weak-password') {
         setAuthError("Key phrase (password) must be at least 6 characters.");
       } else if (code === 'auth/invalid-email') {
         setAuthError("Please provide a valid email address.");
-      } else if (code === 'auth/network-request-failed') {
-        setAuthError("Network request to Auth server failed. If browsing in a preview iframe, click 'Guest' tab to explore offline.");
       } else {
         setAuthError(err.message || "Failed to enlist secured skater.");
       }
@@ -5393,117 +5439,103 @@ export default function App() {
       }
 
       const rawInput = emailInput.trim().toLowerCase();
-      // Clean leading '@' if user typed handle with '@' prefix (e.g. '@moonsufers' or '@outlaw')
       const cleanInput = rawInput.replace(/^@+/, '');
-      let targetEmail = cleanInput;
 
-      // Check if user provided an email or a handle
-      const isEmail = cleanInput.includes('@');
+      let authenticatedUser: { uid: string; email: string; profile?: SkateProfile | null } | null = null;
 
-      if (!isEmail) {
-        // Look up handle in Firestore database
-        try {
-          const usersCol = collection(db, 'users');
-          const q = query(usersCol, where('handle', '==', cleanInput));
-          const querySnap = await getDocs(q);
-          if (!querySnap.empty) {
-            const docData = querySnap.docs[0].data();
-            if (docData.email) {
-              targetEmail = docData.email.trim().toLowerCase();
-            } else {
-              throw new Error(`Outlaw handle "@${cleanInput}" found, but no registered email is attached.`);
-            }
-          } else {
-            // Check default admin email fallbacks
-            if (cleanInput === 'moonsufers' || cleanInput === 'moonsurfers') {
-              targetEmail = 'moonsufers@gmail.com';
-            } else if (cleanInput === 'inenepadi') {
-              targetEmail = 'inenepadi@gmail.com';
-            } else {
-              throw new Error(`Outlaw handle "@${cleanInput}" not found. Please sign up first.`);
-            }
+      // 1. Primary path: Server Auth Proxy (fast, bypasses iframe CORS/network blocks, handles @handles)
+      try {
+        const proxyRes = await fetch('/api/auth/sign-in', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ emailOrHandle: cleanInput, password: passwordInput })
+        });
+        const proxyData = await proxyRes.json();
+
+        if (proxyData.success && proxyData.uid) {
+          authenticatedUser = {
+            uid: proxyData.uid,
+            email: proxyData.email || cleanInput,
+            profile: proxyData.profile || null
+          };
+          if (proxyData.idToken) {
+            localStorage.setItem('moonsurfers_auth_token', proxyData.idToken);
           }
-        } catch (lookupErr: any) {
-          if (lookupErr.message?.includes("not found") || lookupErr.message?.includes("sign up first")) {
-            throw lookupErr;
-          }
-          console.warn("Handle lookup error:", lookupErr);
-          throw new Error(`Outlaw handle "@${cleanInput}" not found. Please sign up first.`);
-        }
-      } else {
-        // Validate email format
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(cleanInput)) {
-          // Fallback: try handle lookup just in case cleanInput was meant as a handle
-          try {
-            const usersCol = collection(db, 'users');
-            const q = query(usersCol, where('handle', '==', cleanInput));
-            const querySnap = await getDocs(q);
-            if (!querySnap.empty && querySnap.docs[0].data()?.email) {
-              targetEmail = querySnap.docs[0].data().email.trim().toLowerCase();
-            } else {
-              throw new Error("Invalid email address format. Please enter a valid email address or outlaw handle.");
-            }
-          } catch (fallbackCheck) {
-            throw new Error("Invalid email address format. Please enter a valid email address or outlaw handle.");
+          // Also sync client-side Firebase Auth SDK in background if supported
+          if (proxyData.email) {
+            signInWithEmailAndPassword(auth, proxyData.email, passwordInput).catch(() => {});
           }
         } else {
-          try {
-            const usersCol = collection(db, 'users');
-            const q = query(usersCol, where('email', '==', cleanInput));
-            const querySnap = await getDocs(q);
-            const isDefaultAdmin = cleanInput === 'inenepadi@gmail.com' || cleanInput === 'moonsufers@gmail.com' || cleanInput === 'moonsurfers@gmail.com';
+          // If server reported invalid credentials or user not found, show user-friendly message
+          if (proxyData.error === 'INVALID_CREDENTIALS') {
+            setAuthError("Invalid email/handle or password. Please check your credentials.");
+            return;
+          } else if (proxyData.error === 'USER_NOT_FOUND') {
+            setAuthError(proxyData.message || `Outlaw account "${cleanInput}" not found. Please click 'Join Network' to register, or 'Guest' to explore.`);
+            return;
+          } else if (proxyData.error === 'TOO_MANY_ATTEMPTS') {
+            setAuthError("Access temporarily blocked due to repeated failed login attempts. Please try again later.");
+            return;
+          } else if (proxyData.message) {
+            setAuthError(proxyData.message);
+            return;
+          }
+        }
+      } catch (proxyNetErr) {
+        console.warn("[SIGNIN] Auth proxy fetch warning, trying client Firebase Auth fallback:", proxyNetErr);
+      }
 
-            if (querySnap.empty && !isDefaultAdmin) {
-              throw new Error("No registered rider account found for this email address. Please sign up first.");
-            }
-          } catch (checkErr: any) {
-            if (checkErr.message?.includes("sign up first") || checkErr.message?.includes("Invalid email")) {
-              throw checkErr;
-            }
-            console.warn("User email verification check warning:", checkErr);
+      // 2. Fallback path: Client Firebase Auth (if server proxy network was unavailable)
+      if (!authenticatedUser) {
+        try {
+          const cred = await signInWithEmailAndPassword(auth, cleanInput, passwordInput);
+          authenticatedUser = { uid: cred.user.uid, email: cred.user.email || cleanInput };
+        } catch (clientAuthErr: any) {
+          const code = clientAuthErr?.code || '';
+          if (code === 'auth/user-not-found' || code === 'auth/invalid-credential') {
+            setAuthError("Invalid email/handle or password. Account does not exist or password is incorrect.");
+            return;
+          } else if (code === 'auth/wrong-password') {
+            setAuthError("Incorrect access key (password).");
+            return;
+          } else if (code === 'auth/invalid-email') {
+            setAuthError("Invalid email address format. Please enter a valid email or outlaw handle.");
+            return;
+          } else if (code === 'auth/too-many-requests') {
+            setAuthError("Access temporarily blocked due to repeated failed login attempts. Please try again later.");
+            return;
+          } else if (code === 'auth/network-request-failed') {
+            setAuthError("Network connection to Auth server unreachable. Click 'Guest' tab to explore offline.");
+            return;
+          } else {
+            setAuthError(clientAuthErr?.message || "Failed to verify outlaw credentials.");
+            return;
           }
         }
       }
 
-      // Verify credentials via Firebase Auth or Supabase Auth fallback
-      try {
-        await signInWithEmailAndPassword(auth, targetEmail, passwordInput);
+      if (authenticatedUser) {
+        const { uid, email } = authenticatedUser;
+        setCurrentUser({ uid, email, isGuest: false });
+        let userProf: SkateProfile | null = authenticatedUser.profile || await getSkaterProfile(uid);
+        if (!userProf) {
+          await fetchOrCreateUserProfile(uid, email, cleanInput);
+          userProf = await getSkaterProfile(uid);
+        }
+        if (userProf) {
+          const validated = await validateAndVerifyStreak(userProf);
+          setProfile(validated);
+          if (validated.activeLocation?.districtId) {
+            setCurrentDistrictId(validated.activeLocation.districtId);
+          }
+          localStorage.setItem('moonsurfers_auth_session', JSON.stringify({ uid, email, isGuest: false, profile: validated }));
+        }
         sounds.playTrickSuccess();
         addTickerMessage(`NODE AUTHENTICATED: Welcome back ${cleanInput.toUpperCase()}`);
-      } catch (authErr: any) {
-        console.warn("Firebase Auth signIn note:", authErr?.message);
-        // Attempt Supabase Auth as secondary provider
-        const supaUser = await signInWithSupabase(targetEmail, passwordInput);
-        if (supaUser && supaUser.id) {
-          setCurrentUser({ uid: supaUser.id, email: targetEmail, isGuest: false });
-          const userProf = await getSkaterProfile(supaUser.id);
-          if (userProf) {
-            const validated = await validateAndVerifyStreak(userProf);
-            setProfile(validated);
-          }
-          sounds.playTrickSuccess();
-          addTickerMessage(`NODE AUTHENTICATED (SUPABASE): Welcome back ${cleanInput.toUpperCase()}`);
-          return;
-        }
-
-        const code = authErr?.code || '';
-        if (code === 'auth/user-not-found' || code === 'auth/invalid-credential') {
-          throw new Error("Invalid email/handle or password. Account does not exist or password is incorrect.");
-        } else if (code === 'auth/wrong-password') {
-          throw new Error("Incorrect access key (password).");
-        } else if (code === 'auth/invalid-email') {
-          throw new Error("Invalid email address format. Please enter a valid email.");
-        } else if (code === 'auth/too-many-requests') {
-          throw new Error("Access temporarily blocked due to repeated failed login attempts. Please try again later.");
-        } else if (code === 'auth/network-request-failed') {
-          throw new Error("Network connection to Auth server failed. If browsing in a preview iframe, click 'Guest' tab to explore offline.");
-        } else {
-          throw new Error(authErr.message || "Authentication failed. Please check your credentials.");
-        }
+        return;
       }
     } catch (err: any) {
-      console.error("SignIn Error:", err);
+      console.warn("SignIn warning:", err?.message || err);
       setAuthError(err.message || "Failed to verify outlaw credentials.");
     } finally {
       setAuthLoading(false);
@@ -5680,6 +5712,8 @@ export default function App() {
     setIsStandbyMode(false);
     signOut(auth);
     localStorage.removeItem('moonsurfers_guest_profile');
+    localStorage.removeItem('moonsurfers_auth_session');
+    localStorage.removeItem('moonsurfers_auth_token');
     setCurrentUser(null);
     setProfile(null);
     setEmailInput('');

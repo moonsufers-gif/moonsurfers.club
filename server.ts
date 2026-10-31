@@ -251,6 +251,314 @@ async function startServer() {
     }
   });
 
+  // ==========================================
+  // SERVER-SIDE AUTH PROXY (Identity Toolkit / Firebase Auth)
+  // Ensures 100% reliable login & signup in preview iframes and restrictive sandboxes
+  // ==========================================
+  app.post("/api/auth/sign-in", async (req, res) => {
+    try {
+      const { emailOrHandle, password } = req.body || {};
+      if (!emailOrHandle || !password) {
+        return res.status(400).json({ success: false, error: "MISSING_FIELDS", message: "Email/handle and password are required." });
+      }
+
+      const rawInput = String(emailOrHandle).trim().toLowerCase();
+      const cleanInput = rawInput.replace(/^@+/, "");
+      let targetEmail = cleanInput;
+
+      // Handle lookup if input does not contain '@'
+      if (!cleanInput.includes("@")) {
+        try {
+          const usersCol = firestoreCollection(rawDb, "users");
+          const q = firestoreQuery(usersCol, firestoreWhere("handle", "==", cleanInput));
+          const snap = await firestoreGetDocs(q);
+          if (!snap.empty) {
+            const docData = snap.docs[0].data();
+            if (docData.email) {
+              targetEmail = String(docData.email).trim().toLowerCase();
+            }
+          } else {
+            // Default admin fallback accounts
+            if (cleanInput === "moonsufers" || cleanInput === "moonsurfers") {
+              targetEmail = "moonsufers@gmail.com";
+            } else if (cleanInput === "inenepadi" || cleanInput === "inene233") {
+              targetEmail = "inenepadi@gmail.com";
+            } else if (cleanInput === "wawoloradio") {
+              targetEmail = "wawoloradio@gmail.com";
+            } else {
+              return res.status(404).json({
+                success: false,
+                error: "USER_NOT_FOUND",
+                message: `Outlaw handle "@${cleanInput}" not found. Please sign up first.`
+              });
+            }
+          }
+        } catch (lookupErr) {
+          console.warn("[AUTH PROXY] Handle lookup warning:", lookupErr);
+        }
+      }
+
+      // Call Google Identity Toolkit directly from the server
+      const apiKey = firebaseConfig.apiKey;
+      const idToolkitUrl = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`;
+      const idRes = await fetch(idToolkitUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: targetEmail,
+          password: String(password),
+          returnSecureToken: true
+        })
+      });
+
+      const idData: any = await idRes.json();
+
+      if (!idRes.ok || idData.error) {
+        const errCode = idData.error?.message || "UNKNOWN_AUTH_ERROR";
+        console.warn("[AUTH PROXY] Identity Toolkit signIn note:", errCode);
+        if (
+          errCode === "INVALID_LOGIN_CREDENTIALS" ||
+          errCode === "INVALID_PASSWORD" ||
+          errCode === "EMAIL_NOT_FOUND"
+        ) {
+          return res.status(401).json({
+            success: false,
+            error: "INVALID_CREDENTIALS",
+            message: "Invalid email/handle or access key (password)."
+          });
+        }
+        if (errCode === "USER_DISABLED") {
+          return res.status(403).json({
+            success: false,
+            error: "USER_DISABLED",
+            message: "This skater account has been disabled."
+          });
+        }
+        if (errCode === "TOO_MANY_ATTEMPTS_TRY_LATER") {
+          return res.status(429).json({
+            success: false,
+            error: "TOO_MANY_ATTEMPTS",
+            message: "Access temporarily blocked due to repeated failed login attempts. Please try again later."
+          });
+        }
+        return res.status(400).json({
+          success: false,
+          error: errCode,
+          message: idData.error?.message || "Authentication failed."
+        });
+      }
+
+      // Successfully authenticated with Identity Toolkit
+      const uid = idData.localId;
+      const authedEmail = idData.email || targetEmail;
+
+      // Retrieve existing profile from Firestore or generate default profile
+      let userProfile: any = null;
+      try {
+        const uDoc = await firestoreGetDoc(firestoreDoc(rawDb, "users", uid));
+        if (uDoc.exists()) {
+          userProfile = { id: uDoc.id, ...uDoc.data() };
+        } else {
+          // Fallback query by email
+          const qEmail = firestoreQuery(firestoreCollection(rawDb, "users"), firestoreWhere("email", "==", authedEmail));
+          const qSnap = await firestoreGetDocs(qEmail);
+          if (!qSnap.empty) {
+            userProfile = { id: qSnap.docs[0].id, ...qSnap.docs[0].data() };
+          }
+        }
+      } catch (profErr) {
+        console.warn("[AUTH PROXY] Profile fetch note:", profErr);
+      }
+
+      if (!userProfile) {
+        const fallbackHandle = cleanInput.includes("@") ? authedEmail.split("@")[0].replace(/[^a-zA-Z0-9_]/g, "") : cleanInput;
+        userProfile = {
+          id: uid,
+          handle: fallbackHandle || "nomad",
+          email: authedEmail,
+          name: fallbackHandle || "nomad",
+          level: 1,
+          reputation: 0,
+          dailyStreak: 1,
+          badges: ["nomad_starter"],
+          friends: [],
+          skateStyle: "STREET",
+          motto: "Ride the edge of the grid",
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        try {
+          await firestoreSetDoc(firestoreDoc(rawDb, "users", uid), userProfile, { merge: true });
+        } catch (sErr) {
+          console.warn("[AUTH PROXY] Set default profile note:", sErr);
+        }
+      }
+
+      return res.json({
+        success: true,
+        uid,
+        email: authedEmail,
+        idToken: idData.idToken,
+        refreshToken: idData.refreshToken,
+        profile: userProfile
+      });
+    } catch (err: any) {
+      console.warn("[AUTH PROXY] Sign in exception:", err?.message || err);
+      return res.status(500).json({ success: false, error: "SERVER_ERROR", message: err.message || "Internal auth error." });
+    }
+  });
+
+  app.post("/api/auth/sign-up", async (req, res) => {
+    try {
+      const { email, password, handle } = req.body || {};
+      if (!email || !password) {
+        return res.status(400).json({ success: false, error: "MISSING_FIELDS", message: "Email and password are required." });
+      }
+
+      const apiKey = firebaseConfig.apiKey;
+      const cleanEmail = String(email).trim().toLowerCase();
+      const cleanH = handle ? String(handle).trim().toLowerCase().replace(/^@+/, "") : cleanEmail.split("@")[0].replace(/[^a-zA-Z0-9_]/g, "");
+
+      // Check handle collision in Firestore
+      if (cleanH) {
+        try {
+          const qH = firestoreQuery(firestoreCollection(rawDb, "users"), firestoreWhere("handle", "==", cleanH));
+          const snapH = await firestoreGetDocs(qH);
+          if (!snapH.empty) {
+            const existingUser = snapH.docs[0].data();
+            if (existingUser.email && String(existingUser.email).toLowerCase() !== cleanEmail) {
+              return res.status(409).json({
+                success: false,
+                error: "HANDLE_EXISTS",
+                message: `Outlaw handle "@${cleanH}" is already claimed by another rider. Please pick a different handle.`
+              });
+            }
+          }
+        } catch (hErr) {
+          console.warn("[AUTH PROXY] Handle check note:", hErr);
+        }
+      }
+
+      const idToolkitUrl = `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`;
+      const idRes = await fetch(idToolkitUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: cleanEmail,
+          password: String(password),
+          returnSecureToken: true
+        })
+      });
+
+      const idData: any = await idRes.json();
+
+      if (!idRes.ok || idData.error) {
+        const errCode = idData.error?.message || "UNKNOWN_AUTH_ERROR";
+        console.warn("[AUTH PROXY] Identity Toolkit signUp note:", errCode);
+        
+        if (errCode === "EMAIL_EXISTS") {
+          // Check if credentials match to allow seamless sign-in
+          try {
+            const loginRes = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${apiKey}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                email: cleanEmail,
+                password: String(password),
+                returnSecureToken: true
+              })
+            });
+            const loginData: any = await loginRes.json();
+            if (loginRes.ok && loginData.localId) {
+              const uid = loginData.localId;
+              let existingProf: any = null;
+              try {
+                const uDoc = await firestoreGetDoc(firestoreDoc(rawDb, "users", uid));
+                if (uDoc.exists()) {
+                  existingProf = { id: uDoc.id, ...uDoc.data() };
+                }
+              } catch (e) {}
+
+              return res.json({
+                success: true,
+                isExistingUser: true,
+                uid,
+                email: loginData.email || cleanEmail,
+                idToken: loginData.idToken,
+                refreshToken: loginData.refreshToken,
+                profile: existingProf
+              });
+            }
+          } catch (autoLoginErr) {
+            console.warn("[AUTH PROXY] Auto-login check note:", autoLoginErr);
+          }
+
+          return res.status(409).json({
+            success: false,
+            error: "EMAIL_EXISTS",
+            message: "This email is already registered. Switched to Log In tab — enter your password to sign in."
+          });
+        }
+
+        if (errCode === "WEAK_PASSWORD : Password should be at least 6 characters" || errCode.includes("WEAK_PASSWORD")) {
+          return res.status(400).json({
+            success: false,
+            error: "WEAK_PASSWORD",
+            message: "Key phrase (password) must be at least 6 characters."
+          });
+        }
+        if (errCode.includes("INVALID_EMAIL")) {
+          return res.status(400).json({
+            success: false,
+            error: "INVALID_EMAIL",
+            message: "Please provide a valid email address."
+          });
+        }
+        return res.status(400).json({
+          success: false,
+          error: errCode,
+          message: idData.error?.message || "Failed to enlist skater account."
+        });
+      }
+
+      // New user created successfully
+      const uid = idData.localId;
+      const newProfile = {
+        id: uid,
+        handle: cleanH || "nomad",
+        email: cleanEmail,
+        name: cleanH || "nomad",
+        level: 1,
+        reputation: 0,
+        dailyStreak: 1,
+        badges: ["nomad_starter"],
+        friends: [],
+        skateStyle: "STREET",
+        motto: "Ride the edge of the grid",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      try {
+        await firestoreSetDoc(firestoreDoc(rawDb, "users", uid), newProfile, { merge: true });
+      } catch (docErr) {
+        console.warn("[AUTH PROXY] Firestore new profile write note:", docErr);
+      }
+
+      return res.json({
+        success: true,
+        uid,
+        email: idData.email || cleanEmail,
+        idToken: idData.idToken,
+        refreshToken: idData.refreshToken,
+        profile: newProfile
+      });
+    } catch (err: any) {
+      console.warn("[AUTH PROXY] Sign up exception:", err?.message || err);
+      return res.status(500).json({ success: false, error: "SERVER_ERROR", message: err.message || "Internal auth signup error." });
+    }
+  });
+
   // AI TRICK VIDEO VERIFICATION
   app.post("/api/verify-trick", async (req, res) => {
     try {
