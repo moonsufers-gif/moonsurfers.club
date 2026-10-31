@@ -510,35 +510,35 @@ export function UndergroundChallenges({
   return (
     <div className="border border-white/10 bg-zinc-950/40 divide-y divide-white/10 select-none font-mono">
       {/* HEADER SECTION */}
-      <div className="p-4 bg-black/60 flex flex-col md:flex-row md:items-center justify-between gap-2">
+      <div className="p-3 sm:p-3.5 bg-black/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div className="flex flex-col space-y-0.5">
-          <span className="text-[9px] text-red-600 font-bold tracking-widest uppercase animate-pulse">OUTLAW MOTORWAY & EVENT CORE</span>
-          <h3 className="text-base font-black italic uppercase font-syne tracking-tight text-white">OUTLAW INTEL BOX</h3>
+          <span className="text-[8.5px] sm:text-[9px] text-red-600 font-bold tracking-widest uppercase animate-pulse">OUTLAW MOTORWAY & EVENT CORE</span>
+          <h3 className="text-sm sm:text-base font-black italic uppercase font-syne tracking-tight text-white">OUTLAW INTEL BOX</h3>
         </div>
 
         {/* TABS CONTROLLER */}
-        <div className="flex bg-zinc-950 border border-white/15 p-1 rounded-sm gap-1 overflow-x-auto">
+        <div className="flex bg-zinc-950 border border-white/15 p-0.5 sm:p-1 rounded-sm gap-0.5 sm:gap-1 overflow-x-auto">
           <button
             onClick={() => { sounds.playTick(); setActiveTab('personal'); }}
-            className={`text-[8.5px] font-black uppercase px-2 py-1 tracking-wider transition-all rounded-xs cursor-pointer shrink-0 ${activeTab === 'personal' ? 'bg-white text-black' : 'text-zinc-500 hover:text-white'}`}
+            className={`text-[8px] sm:text-[8.5px] font-black uppercase px-2 py-1 tracking-wider transition-all rounded-xs cursor-pointer shrink-0 ${activeTab === 'personal' ? 'bg-white text-black' : 'text-zinc-500 hover:text-white'}`}
           >
             Personal
           </button>
           <button
             onClick={() => { sounds.playTick(); setActiveTab('weekly'); }}
-            className={`text-[8.5px] font-black uppercase px-2 py-1 tracking-wider transition-all rounded-xs cursor-pointer shrink-0 ${activeTab === 'weekly' ? 'bg-white text-black' : 'text-zinc-500 hover:text-white'}`}
+            className={`text-[8px] sm:text-[8.5px] font-black uppercase px-2 py-1 tracking-wider transition-all rounded-xs cursor-pointer shrink-0 ${activeTab === 'weekly' ? 'bg-white text-black' : 'text-zinc-500 hover:text-white'}`}
           >
             Weeklies
           </button>
           <button
             onClick={() => { sounds.playTick(); setActiveTab('intel'); }}
-            className={`text-[8.5px] font-black uppercase px-2 py-1 tracking-wider transition-all rounded-xs cursor-pointer shrink-0 ${activeTab === 'intel' ? 'bg-red-600 text-white font-extrabold' : 'text-zinc-500 hover:text-white'}`}
+            className={`text-[8px] sm:text-[8.5px] font-black uppercase px-2 py-1 tracking-wider transition-all rounded-xs cursor-pointer shrink-0 ${activeTab === 'intel' ? 'bg-red-600 text-white font-extrabold' : 'text-zinc-500 hover:text-white'}`}
           >
             Intel Box
           </button>
           <button
             onClick={() => { sounds.playTick(); setActiveTab('events'); }}
-            className={`text-[8.5px] font-black uppercase px-2 py-1 tracking-wider transition-all rounded-xs cursor-pointer shrink-0 ${activeTab === 'events' ? 'bg-red-600 text-white font-extrabold' : 'text-zinc-500 hover:text-white'}`}
+            className={`text-[8px] sm:text-[8.5px] font-black uppercase px-2 py-1 tracking-wider transition-all rounded-xs cursor-pointer shrink-0 ${activeTab === 'events' ? 'bg-red-600 text-white font-extrabold' : 'text-zinc-500 hover:text-white'}`}
           >
             Events
           </button>
@@ -547,10 +547,10 @@ export function UndergroundChallenges({
 
       {/* TAB CONTENT: PERSONAL */}
       {activeTab === 'personal' && (
-        <div className="p-5 space-y-4">
-          <div className="border border-white/15 p-4 bg-white/5 hover:bg-white/10 transition-colors space-y-3">
+        <div className="p-3 sm:p-4 space-y-3 sm:space-y-3.5">
+          <div className="border border-white/15 p-3 sm:p-3.5 bg-white/5 hover:bg-white/10 transition-colors space-y-2.5">
             <div className="flex items-start justify-between gap-1">
-              <p className="text-[10.5px] text-white/70 lowercase leading-relaxed font-sans">
+              <p className="text-[10px] sm:text-[10.5px] text-white/70 lowercase leading-relaxed font-sans">
                 engage the system coordinate core engine to extract local undercover objectives based on your current sector, spot locations, and active surveillance radar.
               </p>
             </div>
@@ -558,7 +558,7 @@ export function UndergroundChallenges({
             <button 
               onClick={onTriggerPersonalChallenge}
               disabled={isGeneratingChallenge}
-              className="w-full bg-white text-black font-black uppercase text-xs py-2.5 flex items-center justify-center gap-2 hover:bg-zinc-200 transition-colors rounded-none cursor-pointer"
+              className="w-full bg-white text-black font-black uppercase text-xs py-2 sm:py-2.5 flex items-center justify-center gap-2 hover:bg-zinc-200 transition-colors rounded-none cursor-pointer"
             >
               {isGeneratingChallenge ? (
                 <span className="animate-pulse">DECODING TELEMETRY SPECS...</span>
@@ -628,7 +628,7 @@ export function UndergroundChallenges({
 
       {/* TAB CONTENT: WEEKLY CURATION SHRED */}
       {activeTab === 'weekly' && (
-        <div className="p-4 space-y-4">
+        <div className="p-3 sm:p-3.5 space-y-3">
           {/* SEARCH, SORT, SHUFFLE PANEL */}
           <div className="space-y-2">
             <div className="flex items-center gap-2">
@@ -803,7 +803,7 @@ export function UndergroundChallenges({
 
       {/* TAB CONTENT: OUTLAW INTEL BOX */}
       {activeTab === 'intel' && (
-        <div className="p-4 space-y-4">
+        <div className="p-3 sm:p-3.5 space-y-3">
           <div className="flex items-center justify-between border-b border-white/10 pb-2">
             <div>
               <h4 className="text-xs font-black uppercase text-white font-syne tracking-wide flex items-center gap-1.5">
@@ -1197,7 +1197,7 @@ export function UndergroundChallenges({
 
       {/* TAB CONTENT: CUSTOM EVENTS WITH MINIMAL COUNTDOWN */}
       {activeTab === 'events' && (
-        <div className="p-4 space-y-4">
+        <div className="p-3 sm:p-3.5 space-y-3">
           <div className="flex items-center justify-between border-b border-white/10 pb-2">
             <div>
               <h4 className="text-xs font-black uppercase text-white font-syne tracking-wide flex items-center gap-1.5">

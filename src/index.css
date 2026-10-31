@@ -465,3 +465,23 @@ a:focus-visible,
   background: rgba(255, 0, 43, 0.8);
 }
 
+/* Tighten layout across all mobile, tablet, and desktop devices */
+html, body, #root {
+  overflow-x: hidden !important;
+  max-width: 100vw !important;
+  touch-action: manipulation;
+}
+
+/* Prevent text clipping and awkward word wraps on buttons and labels */
+button, label, select, input {
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (max-width: 640px) {
+  /* Mobile edge-to-edge tighten */
+  button {
+    touch-action: manipulation;
+  }
+}
+
+

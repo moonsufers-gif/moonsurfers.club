@@ -5,16 +5,53 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>MOONSURFERS // Global Night-Skate Zine</title>
     
-    <!-- Google Analytics (gtag.js) -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-D96JY8C745"></script>
+    <!-- Global Cross-Origin Script Error Resilience Guard -->
+    <script>
+      (function() {
+        window.addEventListener('error', function(event) {
+          if (!event) return;
+          var msg = event.message || '';
+          if (msg === 'Script error.' || msg === 'Script error' || !event.filename || event.lineno === 0) {
+            // Silence cross-origin error noise from external scripts, ad-blockers, or tracking firewalls
+            if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+            return true;
+          }
+        }, true);
+        window.addEventListener('unhandledrejection', function(event) {
+          if (event && event.reason) {
+            var rMsg = event.reason.message || String(event.reason);
+            if (rMsg === 'Script error.' || rMsg === 'Script error' || event.reason.name === 'AbortError') {
+              event.preventDefault();
+            }
+          }
+        });
+      })();
+    </script>
+
+    <!-- Google Analytics (gtag.js) - Graceful Fallback for Sandboxed & Ad-Blocked Environments -->
     <script>
       window.dataLayer = window.dataLayer || [];
-      function gtag(){dataLayer.push(arguments);}
+      function gtag(){try { dataLayer.push(arguments); } catch(e){}}
       gtag('js', new Date());
       gtag('config', 'G-D96JY8C745', {
         send_page_view: true,
         cookie_domain: 'auto'
       });
+      (function() {
+        try {
+          var s = document.createElement('script');
+          s.async = true;
+          s.crossOrigin = 'anonymous';
+          s.src = 'https://www.googletagmanager.com/gtag/js?id=G-D96JY8C745';
+          s.onerror = function() {
+            // Silently bypass when blocked by browser tracker protection or CSP
+          };
+          var target = document.head || document.getElementsByTagName('head')[0];
+          if (target) {
+            target.appendChild(s);
+          }
+        } catch(e) {}
+      })();
     </script>
 
     <!-- PWA / Bookmark App Support -->
@@ -63,10 +100,10 @@
       "description": "A zine-style global night-skate movement dashboard and interactive feed featuring live maps, trick uploads, daily missions, and leaderboards."
     }
     </script>
-    <!-- Google Fonts for Editorial/Zine Aesthetic -->
+    <!-- Google Fonts for Editorial/Zine Aesthetic & Cinematic Lockscreen -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,700;1,400&family=Space+Grotesk:wght@400;500;700&family=Syne:wght@700;800&family=Outfit:wght@300;400;700;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,400&family=JetBrains+Mono:ital,wght@0,300;0,400;0,700;1,400&family=Space+Grotesk:wght@400;500;700&family=Syne:wght@700;800&family=Outfit:wght@300;400;700;900&display=swap" rel="stylesheet">
 
     <!-- Universal WebView & TV Browser Base Defaults -->
     <style id="moonsurfers-base-css">

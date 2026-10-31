@@ -15,6 +15,7 @@
     "@google/genai": "^2.4.0",
     "@supabase/supabase-js": "^2.108.2",
     "@tailwindcss/vite": "^4.1.14",
+    "@types/three": "^0.186.0",
     "@vis.gl/react-google-maps": "^1.8.3",
     "@vitejs/plugin-react": "^5.0.4",
     "compression": "^1.8.1",
@@ -28,6 +29,7 @@
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "recharts": "^3.8.1",
+    "three": "^0.186.1",
     "vite": "^6.2.3"
   },
   "devDependencies": {

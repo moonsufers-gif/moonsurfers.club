@@ -2334,17 +2334,51 @@ export default function App() {
   const [activePlaylist, setActivePlaylist] = useState<any | null>(null);
   const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(-1);
   const [shuffledIndices, setShuffledIndices] = useState<number[]>([]);
-  const [isRadioPlaying, setIsRadioPlaying] = useState<boolean>(() => {
-    const saved = localStorage.getItem('wawolo_radio_playing');
-    return saved !== null ? saved === 'true' : true; // Default to active for seamless 24/7 background stream
-  }); // Represents if local listener is active (unmuted)
+  // User manual pause flag for current session (defaults to false so live stream continues automatically)
+  const userManuallyPausedRef = useRef<boolean>(false);
+  const [isRadioPlaying, setIsRadioPlaying] = useState<boolean>(true); // Online radio defaults to playing 24/7
   const [radioPlaybackState, setRadioPlaybackState] = useState<any>(null); // Synchronized clock playback state from server
   const [isAudioBuffering, setIsAudioBuffering] = useState<boolean>(false);
 
-  // Sync isRadioPlaying preference to local storage
-  useEffect(() => {
-    localStorage.setItem('wawolo_radio_playing', String(isRadioPlaying));
-  }, [isRadioPlaying]);
+  // Computes current live broadcast track and elapsed seconds in rotation
+  const getLiveStreamPosition = (
+    tracks: any[],
+    state: any
+  ): { targetTrackIndex: number; elapsedSec: number } => {
+    if (!tracks || tracks.length === 0) {
+      return { targetTrackIndex: 0, elapsedSec: 0 };
+    }
+
+    const epoch = state?.trackStartedAt || (state?.updatedAt ? new Date(state.updatedAt).getTime() : 0);
+    if (epoch > 0) {
+      const durationsSec = tracks.map(t => {
+        const d = typeof t.duration === 'number' ? t.duration : parseFloat(String(t.duration || 180));
+        return isNaN(d) || d <= 0 ? 180 : Math.round(d);
+      });
+      const totalPlaylistSec = durationsSec.reduce((a, b) => a + b, 0) || 180;
+      const now = Date.now();
+      const elapsedTotalSec = Math.max(0, (now - epoch) / 1000);
+      const cycleSec = elapsedTotalSec % totalPlaylistSec;
+
+      let accumulated = 0;
+      for (let i = 0; i < durationsSec.length; i++) {
+        const trackDur = durationsSec[i];
+        if (accumulated + trackDur > cycleSec) {
+          return {
+            targetTrackIndex: i,
+            elapsedSec: cycleSec - accumulated
+          };
+        }
+        accumulated += trackDur;
+      }
+    }
+
+    const fallbackElapsed = Math.max(0, (state?.elapsedMs || 0) / 1000);
+    const idx = (typeof state?.currentTrackIndex === 'number' && state.currentTrackIndex >= 0 && state.currentTrackIndex < tracks.length)
+      ? state.currentTrackIndex
+      : 0;
+    return { targetTrackIndex: idx, elapsedSec: fallbackElapsed };
+  };
 
   const activePlayIndex = currentTrackIndex >= 0 ? currentTrackIndex : 0;
 
@@ -2523,30 +2557,95 @@ export default function App() {
   const [batchPlaylistName, setBatchPlaylistName] = useState<string>('');
 
   const parseAudioFilename = (filename: string, defaultArtist: string) => {
-    const rawBase = filename.replace(/\.[^/.]+$/, '').trim();
+    const rawBase = filename.replace(/\.[a-zA-Z0-9]+$/i, '').trim();
     const cleanedBase = rawBase.replace(/^(\d{1,3}[\s._-]+)/, '').trim();
 
     let artist = defaultArtist;
     let title = cleanedBase;
 
-    if (cleanedBase.includes(' - ')) {
-      const parts = cleanedBase.split(' - ');
+    // Check separators: hyphen, en-dash, em-dash, underscore
+    if (/[-–—]/.test(cleanedBase)) {
+      const parts = cleanedBase.split(/\s*[-–—]\s*/);
       if (parts.length >= 2) {
         artist = parts[0].trim();
         title = parts.slice(1).join(' - ').trim();
       }
-    } else if (cleanedBase.includes(' _ ')) {
-      const parts = cleanedBase.split(' _ ');
+    } else if (cleanedBase.includes('_')) {
+      const parts = cleanedBase.split(/\s*_\s*/);
       if (parts.length >= 2) {
         artist = parts[0].trim();
-        title = parts.slice(1).join(' _ ').trim();
+        title = parts.slice(1).join(' - ').trim();
       }
     }
 
-    title = title.replace(/_/g, ' ').trim();
-    artist = artist.replace(/_/g, ' ').trim();
+    title = title.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+    artist = artist.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
 
     return { title: title || "UNTITLED TRACK", artist: artist || defaultArtist };
+  };
+
+  // High-speed direct binary upload with live XHR byte progress for any device/browser
+  const uploadAudioWithProgress = (
+    file: Blob | File,
+    trackId: string,
+    title: string,
+    artist: string,
+    duration: number,
+    email: string,
+    handle: string,
+    onProgress: (percent: number) => void
+  ): Promise<{ success: boolean; track?: any; error?: string }> => {
+    return new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      const qParams = new URLSearchParams({
+        trackId,
+        title: title.trim(),
+        artist: artist.trim(),
+        duration: duration.toString(),
+        email,
+        handle,
+        adminKey: "moonsurfers",
+        mimeType: (file as any).type || "audio/mpeg"
+      });
+
+      xhr.open("POST", `/api/music/upload-file?${qParams.toString()}`, true);
+      xhr.setRequestHeader("Content-Type", (file as any).type || "audio/mpeg");
+      xhr.setRequestHeader("x-admin-key", "moonsurfers");
+      xhr.setRequestHeader("x-dj-auth", "true");
+      xhr.setRequestHeader("x-admin-handle", encodeURIComponent(handle));
+      xhr.setRequestHeader("x-admin-email", encodeURIComponent(email));
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && e.total > 0) {
+          const percent = Math.min(99, Math.round((e.loaded / e.total) * 100));
+          onProgress(percent);
+        }
+      };
+
+      xhr.onload = () => {
+        try {
+          const res = JSON.parse(xhr.responseText);
+          if (xhr.status >= 200 && xhr.status < 300 && res.success && res.track) {
+            onProgress(100);
+            resolve({ success: true, track: res.track });
+          } else {
+            resolve({ success: false, error: res.error || `Upload failed with status ${xhr.status}` });
+          }
+        } catch (err: any) {
+          resolve({ success: false, error: err.message || "Parse response failed" });
+        }
+      };
+
+      xhr.onerror = () => {
+        resolve({ success: false, error: "Network connection error while streaming audio" });
+      };
+
+      xhr.ontimeout = () => {
+        resolve({ success: false, error: "Upload timed out" });
+      };
+
+      xhr.send(file);
+    });
   };
 
   const handleBatchFilesSelect = (filesList: FileList | File[]) => {
@@ -2626,32 +2725,25 @@ export default function App() {
         const trackId = `track_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
         let uploadedTrackData: any = null;
 
-        // Primary Fast Upload: Direct raw binary audio stream to Node server
+        // Primary Fast Upload: Direct raw binary audio stream to Node server with real-time byte progress
         try {
-          setBatchTracks(curr => curr.map(t => t.id === item.id ? { ...t, progress: 40 } : t));
-          const qParams = new URLSearchParams({
+          const uploadRes = await uploadAudioWithProgress(
+            fileToUpload,
             trackId,
-            title: item.title.trim(),
-            artist: item.artist.trim() || radioCurator?.name || "MOONSURFERS",
-            duration: duration.toString(),
-            email: emailToSend,
-            handle: handleToSend,
-            mimeType: item.file.type || "audio/mpeg"
-          });
-          const srvRes = await fetch(`/api/music/upload-file?${qParams.toString()}`, {
-            method: "POST",
-            headers: {
-              "Content-Type": item.file.type || "audio/mpeg",
-              "x-admin-key": "moonsurfers",
-              "x-dj-auth": "true",
-              "x-admin-handle": handleToSend,
-              "x-admin-email": emailToSend
-            },
-            body: fileToUpload
-          });
-          const parsedSrv = await safeParseJsonResponse(srvRes);
-          if (parsedSrv.success && parsedSrv.data?.track) {
-            uploadedTrackData = parsedSrv.data.track;
+            item.title,
+            item.artist || radioCurator?.name || "MOONSURFERS",
+            duration,
+            emailToSend,
+            handleToSend,
+            (pct) => {
+              setBatchTracks(curr => curr.map(t => t.id === item.id ? { ...t, progress: pct } : t));
+              const currentItemContribution = pct / totalCount;
+              const completedContribution = (completedCount / totalCount) * 100;
+              setBatchOverallProgress(Math.min(99, Math.round(completedContribution + currentItemContribution)));
+            }
+          );
+          if (uploadRes.success && uploadRes.track) {
+            uploadedTrackData = uploadRes.track;
           }
         } catch (srvErr) {
           console.warn("[BATCH] Direct stream upload error:", srvErr);
@@ -3459,13 +3551,17 @@ export default function App() {
           if (typeof stateData.currentTrackIndex === 'number' && stateData.currentTrackIndex >= 0) {
             setCurrentTrackIndex(stateData.currentTrackIndex);
           }
-          // Instant real-time playback for all listeners & guests when station goes Live
-          if (stateData.isPlaying === true) {
+          // Instant real-time playback for all listeners & guests when station is Live
+          if (stateData.isPlaying === true && !userManuallyPausedRef.current) {
             setIsRadioPlaying(true);
             const activeAudio = activeDeckTagRef.current === 'secondary' && secondaryAudioRef.current
               ? secondaryAudioRef.current
               : radioAudioRef.current;
             if (activeAudio && activeAudio.paused) {
+              const live = getLiveStreamPosition(wawoloTracks, stateData);
+              if (live.elapsedSec > 0 && Math.abs(activeAudio.currentTime - live.elapsedSec) > 2) {
+                try { activeAudio.currentTime = live.elapsedSec; } catch (e) {}
+              }
               activeAudio.play().catch(e => console.warn("[RADIO] Live auto-tune note:", e));
             }
           }
@@ -3480,21 +3576,23 @@ export default function App() {
       unsubTracks();
       unsubRadioState();
     };
-  }, []);
+  }, [wawoloTracks]);
 
   // First-interaction autoplay unblocker to ensure immediate uninterrupted playback
   useEffect(() => {
     const unlockAudio = () => {
+      if (userManuallyPausedRef.current) return;
       const activeAudio = activeDeckTagRef.current === 'secondary' && secondaryAudioRef.current
         ? secondaryAudioRef.current
         : radioAudioRef.current;
-      if (activeAudio && isRadioPlaying && radioPlaybackState?.isPlaying) {
-        const liveStreamElapsedSec = (radioPlaybackState.elapsedMs || 0) / 1000;
-        if (liveStreamElapsedSec > 0 && Math.abs(activeAudio.currentTime - liveStreamElapsedSec) > 1.5) {
-          activeAudio.currentTime = liveStreamElapsedSec;
-        }
-        activeAudio.volume = clampVol(radioVolume);
+      if (activeAudio && isRadioPlaying && (radioPlaybackState?.isPlaying ?? true) && wawoloTracks.length > 0) {
+        const live = getLiveStreamPosition(wawoloTracks, radioPlaybackState);
+        const liveSec = live.elapsedSec;
         if (activeAudio.paused) {
+          if (liveSec > 0 && Math.abs(activeAudio.currentTime - liveSec) > 2) {
+            try { activeAudio.currentTime = liveSec; } catch (e) {}
+          }
+          activeAudio.volume = clampVol(radioVolume);
           activeAudio.play().catch(err => console.warn("[RADIO] Click unblock play attempt:", err));
         }
       }
@@ -3502,12 +3600,14 @@ export default function App() {
     window.addEventListener('pointerdown', unlockAudio);
     window.addEventListener('keydown', unlockAudio);
     window.addEventListener('click', unlockAudio);
+    window.addEventListener('touchstart', unlockAudio);
     return () => {
       window.removeEventListener('pointerdown', unlockAudio);
       window.removeEventListener('keydown', unlockAudio);
       window.removeEventListener('click', unlockAudio);
+      window.removeEventListener('touchstart', unlockAudio);
     };
-  }, [isRadioPlaying, radioPlaybackState, radioVolume]);
+  }, [isRadioPlaying, radioPlaybackState, radioVolume, wawoloTracks]);
 
   const controlRadio = async (action: "play" | "pause" | "skip" | "go-live" | "clear-live-rotation", playlistId?: string) => {
     try {
@@ -3610,12 +3710,15 @@ export default function App() {
     }
 
     navigator.mediaSession.setActionHandler('play', () => {
+      userManuallyPausedRef.current = false;
       setIsRadioPlaying(true);
     });
     navigator.mediaSession.setActionHandler('pause', () => {
+      userManuallyPausedRef.current = true;
       setIsRadioPlaying(false);
     });
     navigator.mediaSession.setActionHandler('stop', () => {
+      userManuallyPausedRef.current = true;
       setIsRadioPlaying(false);
     });
   }, [isRadioPlaying, wawoloTracks, activePlayIndex]);
@@ -3687,9 +3790,10 @@ export default function App() {
       lastSyncedIsPlayingRef.current !== serverIsPlaying;
 
     let targetTrackIndex = currentTrackIndex;
+    const live = getLiveStreamPosition(wawoloTracks, radioPlaybackState);
 
     if (isInitialLoad || (isAdminAction && serverTrackIndex >= 0)) {
-      targetTrackIndex = serverTrackIndex >= 0 ? serverTrackIndex : 0;
+      targetTrackIndex = live.targetTrackIndex;
       setCurrentTrackIndex(targetTrackIndex);
       lastSyncedTrackStartedAtRef.current = serverStartedAt;
       lastSyncedIsPlayingRef.current = serverIsPlaying;
@@ -3700,15 +3804,13 @@ export default function App() {
     }
 
     const activePlayIndex = targetTrackIndex;
-
     const currentTrack = wawoloTracks[activePlayIndex];
 
     if (isRadioPlaying && currentTrack) {
       const targetSrc = currentTrack.url.startsWith('http') ? currentTrack.url : window.location.origin + currentTrack.url;
       
       // Always continue the stream in progress from server's elapsed broadcast clock
-      const liveStreamElapsedSec = (radioPlaybackState?.elapsedMs || 0) / 1000;
-      const startPosition = Math.max(0, liveStreamElapsedSec);
+      const startPosition = targetTrackIndex === live.targetTrackIndex ? Math.max(0, live.elapsedSec) : 0;
 
       const activeAudio = getActiveAudio();
       const inactiveAudio = getInactiveAudio();
@@ -3720,64 +3822,84 @@ export default function App() {
         isCrossfadingRef.current = true;
         activeTrackUrlRef.current = targetSrc;
         
-        // SEAMLESS DUAL-DECK CROSS-FADE WITH SOUNDCLOUD CACHE API ENGINE
+        // ZERO-DELAY DUAL-DECK SEAMLESS CROSS-FADE WITH NEXT-TRACK PRELOAD
         const doCrossfade = async () => {
           try {
-            const playableSrc = await getCachedAudioSrc(targetSrc);
-            inactiveAudio.src = playableSrc;
+            // Direct native HTTP range audio streaming without Cache API blob delay
+            inactiveAudio.src = targetSrc;
             inactiveAudio.preload = "auto";
             
-            // Set currentTime to server's elapsed position so new user immediately continues the stream in progress!
-            if (startPosition > 0) {
-              if (inactiveAudio.readyState >= 1) {
-                inactiveAudio.currentTime = startPosition;
-              } else {
-                const onMeta = () => {
-                  inactiveAudio.currentTime = startPosition;
-                  inactiveAudio.removeEventListener("loadedmetadata", onMeta);
-                };
-                inactiveAudio.addEventListener("loadedmetadata", onMeta);
-              }
+            const isOutgoingActive = !activeAudio.paused && activeAudio.currentTime > 0;
+
+            if (isOutgoingActive) {
+              try { inactiveAudio.currentTime = 0; } catch (e) {}
+              inactiveAudio.volume = 0;
+              await inactiveAudio.play();
+              
+              // Snappy 600ms equal-power DJ crossfade for smooth, instant transitions
+              const crossfadeDurationMs = 600;
+              const startTime = Date.now();
+              const startOutVol = clampVol(activeAudio.volume);
+              const targetInVol = clampVol(radioVolume);
+
+              await new Promise<void>((resolve) => {
+                const interval = setInterval(() => {
+                  const elapsed = Date.now() - startTime;
+                  const progress = Math.min(1, elapsed / crossfadeDurationMs);
+
+                  const outFactor = Math.cos(progress * (Math.PI / 2));
+                  const inFactor = Math.sin(progress * (Math.PI / 2));
+
+                  activeAudio.volume = clampVol(startOutVol * outFactor);
+                  inactiveAudio.volume = clampVol(targetInVol * inFactor);
+
+                  if (progress >= 1) {
+                    clearInterval(interval);
+                    resolve();
+                  }
+                }, 20);
+              });
+
+              activeAudio.pause();
+              activeAudio.volume = 0;
+              inactiveAudio.volume = clampVol(radioVolume);
             } else {
-              inactiveAudio.currentTime = 0;
-            }
-
-            inactiveAudio.volume = clampVol(0);
-            await inactiveAudio.play();
-            
-            // Equal-power 1.8-second DJ crossfade between outgoing activeAudio and incoming inactiveAudio
-            const crossfadeDurationMs = 1800;
-            const startTime = Date.now();
-            const startOutVol = clampVol(activeAudio.volume);
-            const targetInVol = clampVol(radioVolume);
-
-            await new Promise<void>((resolve) => {
-              const interval = setInterval(() => {
-                const elapsed = Date.now() - startTime;
-                const progress = Math.min(1, elapsed / crossfadeDurationMs);
-
-                // Equal power trigonometric crossfade S-curve
-                const outFactor = Math.cos(progress * (Math.PI / 2));
-                const inFactor = Math.sin(progress * (Math.PI / 2));
-
-                activeAudio.volume = clampVol(startOutVol * outFactor);
-                inactiveAudio.volume = clampVol(targetInVol * inFactor);
-
-                if (progress >= 1) {
-                  clearInterval(interval);
-                  resolve();
+              // Instant playback start with zero artificial delay
+              inactiveAudio.volume = clampVol(radioVolume);
+              if (startPosition > 1) {
+                // Smooth non-blocking live position calibration once buffered
+                const calibrateLivePos = () => {
+                  try {
+                    if (inactiveAudio.currentTime < 1) {
+                      inactiveAudio.currentTime = startPosition;
+                    }
+                  } catch (e) {}
+                };
+                if (inactiveAudio.readyState >= 2) {
+                  calibrateLivePos();
+                } else {
+                  inactiveAudio.addEventListener("canplay", calibrateLivePos, { once: true });
                 }
-              }, 25);
-            });
-
-            activeAudio.pause();
-            activeAudio.volume = 0;
-            inactiveAudio.volume = clampVol(radioVolume);
+              } else {
+                try { inactiveAudio.currentTime = 0; } catch (e) {}
+              }
+              await inactiveAudio.play();
+            }
 
             // Flip active deck tag cleanly
             activeDeckTagRef.current = activeDeckTagRef.current === 'primary' ? 'secondary' : 'primary';
+
+            // Proactively pre-buffer next track into newly idle deck for zero-delay future transition
+            const nextIdx = (targetTrackIndex + 1) % (wawoloTracks.length || 1);
+            const nextTrackObj = wawoloTracks[nextIdx];
+            if (nextTrackObj && wawoloTracks.length > 1) {
+              const nextSrc = nextTrackObj.url.startsWith('http') ? nextTrackObj.url : window.location.origin + nextTrackObj.url;
+              activeAudio.src = nextSrc;
+              activeAudio.preload = "auto";
+              try { activeAudio.load(); } catch (e) {}
+            }
           } catch (err) {
-            console.warn("[RADIO] Dual-deck crossfade play warning:", err);
+            console.warn("[RADIO] Dual-deck transition warning:", err);
             inactiveAudio.volume = clampVol(radioVolume);
             activeDeckTagRef.current = activeDeckTagRef.current === 'primary' ? 'secondary' : 'primary';
             const currActive = getActiveAudio();
@@ -3789,10 +3911,10 @@ export default function App() {
 
         doCrossfade();
       } else if (!isCrossfadingRef.current) {
-        if (activeAudio.paused) {
-          const liveStreamElapsedSec = (radioPlaybackState?.elapsedMs || 0) / 1000;
-          if (liveStreamElapsedSec > 0 && Math.abs(activeAudio.currentTime - liveStreamElapsedSec) > 1.5) {
-            activeAudio.currentTime = liveStreamElapsedSec;
+        if (activeAudio.paused && !userManuallyPausedRef.current) {
+          const liveStreamElapsedSec = live.elapsedSec;
+          if (liveStreamElapsedSec > 0 && Math.abs(activeAudio.currentTime - liveStreamElapsedSec) > 2) {
+            try { activeAudio.currentTime = liveStreamElapsedSec; } catch (e) {}
           }
           activeAudio.volume = clampVol(radioVolume);
           activeAudio.play().catch(err => console.warn("[RADIO] Resume play failed:", err));
@@ -3847,20 +3969,29 @@ export default function App() {
             }
           }
         } else if (repeatMode === 'track') {
-          // Track repeat mode: seamless full track loop crossfade
-          const leadTime = duration >= 6 ? 2.0 : (duration > 2 ? 0.8 : 0.2);
+          // Track repeat mode: seamless zero-delay track loop
+          const leadTime = duration >= 6 ? 1.5 : (duration > 2 ? 0.8 : 0.2);
           if (activeAudio.currentTime >= duration - leadTime) {
-            isCrossfadingRef.current = true;
-            activeTrackUrlRef.current = "";
-            setCurrentTrackIndex(targetTrackIndex);
+            activeAudio.currentTime = 0;
+            if (activeAudio.paused) {
+              activeAudio.play().catch(() => {});
+            }
           }
         } else {
-          // Rotation mode: crossfade into next song in playlist
-          const leadTime = duration >= 6 ? 2.0 : (duration > 2 ? 0.8 : 0.2);
-          if (activeAudio.currentTime >= duration - leadTime) {
-            isCrossfadingRef.current = true;
-            const nextIndex = (targetTrackIndex + 1) % (wawoloTracks.length || 1);
-            setCurrentTrackIndex(nextIndex);
+          // Rotation mode: smoothly transition to next song in playlist
+          const leadTime = duration >= 6 ? 1.5 : (duration > 2 ? 0.8 : 0.2);
+          if (activeAudio.currentTime >= duration - leadTime && wawoloTracks.length > 0) {
+            if (wawoloTracks.length === 1) {
+              activeAudio.currentTime = 0;
+              if (activeAudio.paused) {
+                activeAudio.play().catch(() => {});
+              }
+            } else {
+              const nextIndex = (targetTrackIndex + 1) % wawoloTracks.length;
+              if (nextIndex !== targetTrackIndex) {
+                setCurrentTrackIndex(nextIndex);
+              }
+            }
           }
         }
       }
@@ -3872,8 +4003,9 @@ export default function App() {
     const handleEnded = () => {
       if (!isCrossfadingRef.current && wawoloTracks && wawoloTracks.length > 0) {
         if (repeatMode === 'track' || repeatMode === 'snippet' || wawoloTracks.length === 1) {
-          activeTrackUrlRef.current = "";
-          setCurrentTrackIndex(targetTrackIndex);
+          const currActive = getActiveAudio();
+          currActive.currentTime = 0;
+          currActive.play().catch(() => {});
         } else {
           const nextIndex = (targetTrackIndex + 1) % wawoloTracks.length;
           setCurrentTrackIndex(nextIndex);
@@ -5152,21 +5284,48 @@ export default function App() {
 
       // Create Auth user (Firebase Auth with Supabase Auth fallback)
       let uid = '';
+      let isExistingUserLoggedIn = false;
       try {
         const credential = await createUserWithEmailAndPassword(auth, emailInput.trim(), passwordInput);
         uid = credential.user.uid;
       } catch (authErr: any) {
         console.warn("Firebase Auth error during sign-up:", authErr?.message);
         if (authErr?.code === 'auth/email-already-in-use') {
-          throw authErr;
-        }
-        // Attempt Supabase Auth fallback
-        const supaUser = await signUpWithSupabase(emailInput.trim(), passwordInput, cleanHandle);
-        if (supaUser && supaUser.id) {
-          uid = supaUser.id;
+          // Attempt seamless authentication with the provided credentials
+          try {
+            const loginCredential = await signInWithEmailAndPassword(auth, emailInput.trim(), passwordInput);
+            uid = loginCredential.user.uid;
+            isExistingUserLoggedIn = true;
+            console.log("Account already registered: successfully authenticated with existing credentials.");
+          } catch (signInErr: any) {
+            setAuthTab('login');
+            throw authErr;
+          }
         } else {
-          // If auth server is restricted/sandboxed, generate stable local outlaw UID
-          uid = `outlaw_${cleanHandle}_${Date.now()}`;
+          // Attempt Supabase Auth fallback
+          const supaUser = await signUpWithSupabase(emailInput.trim(), passwordInput, cleanHandle);
+          if (supaUser && supaUser.id) {
+            uid = supaUser.id;
+          } else {
+            // If auth server is restricted/sandboxed, generate stable local outlaw UID
+            uid = `outlaw_${cleanHandle}_${Date.now()}`;
+          }
+        }
+      }
+
+      if (isExistingUserLoggedIn) {
+        // Load existing user profile instead of overwriting with initial blank profile
+        const existingProfile = await getSkaterProfile(uid);
+        if (existingProfile) {
+          const validated = await validateAndVerifyStreak(existingProfile);
+          setCurrentUser({ uid, email: emailInput.trim(), isGuest: false });
+          setProfile(validated);
+          if (validated.activeLocation?.districtId) {
+            setCurrentDistrictId(validated.activeLocation.districtId);
+          }
+          sounds.playTrickSuccess();
+          addTickerMessage(`AUTHENTICATED: Welcome back @${(validated.handle || cleanHandle).toUpperCase()}!`);
+          return;
         }
       }
 
@@ -5204,7 +5363,8 @@ export default function App() {
       console.error("SignUp Error:", err);
       const code = err?.code || '';
       if (code === 'auth/email-already-in-use') {
-        setAuthError("This email is already registered. Switch to the Log In tab.");
+        setAuthTab('login');
+        setAuthError("This email is already registered. Switched to Log In tab — enter your password to sign in.");
       } else if (code === 'auth/weak-password') {
         setAuthError("Key phrase (password) must be at least 6 characters.");
       } else if (code === 'auth/invalid-email') {
@@ -8784,8 +8944,17 @@ export default function App() {
               )}
 
               {authError && (
-                <div className="border border-red-500/40 bg-red-950/20 text-red-400 font-mono text-[10px] p-2 text-center uppercase tracking-wide">
-                  [SECURITY ERROR] {authError}
+                <div className="border border-red-500/40 bg-red-950/20 text-red-400 font-mono text-[10px] p-2 text-center uppercase tracking-wide space-y-1.5">
+                  <div>[SECURITY ERROR] {authError}</div>
+                  {authError.toLowerCase().includes("already registered") && (
+                    <button
+                      type="button"
+                      onClick={() => { sounds.playSelect(); setAuthTab('login'); setAuthError(null); }}
+                      className="bg-white text-black hover:bg-zinc-200 font-mono text-[9px] font-black uppercase px-2.5 py-1 tracking-wider cursor-pointer inline-flex items-center gap-1 transition-all rounded-xs"
+                    >
+                      <span>→ SWITCH TO LOG IN TAB</span>
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -9170,11 +9339,11 @@ export default function App() {
         </AnimatePresence>
       </div>
 
-      {/* HEADER BAR - Sleek & Minimal Layout for Maximum Visibility on Mobile, Web, and Smart TV */}
-      <header id="app-header" className="flex flex-col sm:flex-row items-center justify-between px-3 sm:px-5 py-2 border-b border-white/10 gap-2 bg-black/95 sticky top-0 z-40 backdrop-blur-md">
+      {/* HEADER BAR - Sleek & Tightened Layout for Maximum Screen Real Estate Across All Devices */}
+      <header id="app-header" className="flex flex-wrap sm:flex-nowrap items-center justify-between px-2 sm:px-4 py-1.5 sm:py-2 border-b border-white/10 gap-1.5 sm:gap-2 bg-black/95 sticky top-0 z-40 backdrop-blur-md">
         <div id="brand-container" className="flex flex-col w-fit select-none cursor-pointer hover:opacity-90 transition-opacity" onClick={() => { sounds.playSelect(); }}>
-          <div className="flex items-center justify-between w-full font-mono mb-0.5 text-[8px] sm:text-[9px] font-bold text-red-500 uppercase tracking-widest">
-            <span className="bg-red-600/90 text-white font-black text-[7px] sm:text-[8px] px-1.5 py-0.2 uppercase tracking-wider rounded-xs italic">
+          <div className="flex items-center justify-between w-full font-mono mb-0.5 text-[7.5px] sm:text-[9px] font-bold text-red-500 uppercase tracking-widest gap-2">
+            <span className="bg-red-600/90 text-white font-black text-[6.5px] sm:text-[7.5px] px-1 py-0.2 uppercase tracking-wider rounded-xs italic">
               OUTLAW CHANNEL
             </span>
             <span className="text-red-400 font-extrabold">
@@ -9182,18 +9351,18 @@ export default function App() {
             </span>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2">
-            <Flame className="w-5 h-5 sm:w-6 sm:h-6 text-red-500 fill-red-500/40 animate-pulse drop-shadow-[0_0_14px_rgba(255,0,43,0.95)] shrink-0" />
-            <h1 className="text-xl sm:text-2xl font-black tracking-tighter leading-none italic uppercase font-syne text-white">
+            <Flame className="w-4 h-4 sm:w-5 sm:h-5 text-red-500 fill-red-500/40 animate-pulse drop-shadow-[0_0_12px_rgba(255,0,43,0.95)] shrink-0" />
+            <h1 className="text-lg sm:text-2xl font-black tracking-tighter leading-none italic uppercase font-syne text-white">
               MOONSURFERS
             </h1>
           </div>
         </div>
 
-        <div id="controls-panel" className="flex items-center justify-center sm:justify-end gap-1.5 sm:gap-2.5 flex-wrap select-none w-full sm:w-auto">
+        <div id="controls-panel" className="flex items-center justify-end gap-1 sm:gap-2 flex-wrap sm:flex-nowrap select-none ml-auto">
           {/* Offline / Online Network Stream Indicator Component */}
           <div 
             id="network-mode-indicator"
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-sm border font-mono text-[9px] font-black uppercase tracking-wider transition-all select-none ${
+            className={`flex items-center gap-1 px-1.5 sm:px-2.5 py-1 rounded-sm border font-mono text-[8px] sm:text-[9px] font-black uppercase tracking-wider transition-all select-none ${
               !isOnline
                 ? 'bg-amber-950/90 border-amber-500/80 text-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.5)] animate-pulse'
                 : 'bg-emerald-950/40 border-emerald-500/40 text-emerald-400'
@@ -9206,12 +9375,12 @@ export default function App() {
           >
             {!isOnline ? (
               <>
-                <WifiOff className="w-3.5 h-3.5 text-amber-400 shrink-0 animate-bounce" />
-                <span className="font-extrabold text-amber-300">OFFLINE • CACHE STREAM</span>
+                <WifiOff className="w-3 h-3 text-amber-400 shrink-0 animate-bounce" />
+                <span className="font-extrabold text-amber-300 text-[8px] sm:text-[9px]">OFFLINE</span>
               </>
             ) : (
               <>
-                <Wifi className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <Wifi className="w-3 h-3 text-emerald-400 shrink-0" />
                 <span className="hidden sm:inline font-bold text-emerald-400">ONLINE</span>
               </>
             )}
@@ -9221,14 +9390,14 @@ export default function App() {
             <button
               type="button"
               onClick={toggleRegistrationLock}
-              className={`px-2.5 py-1 text-[9px] font-mono font-black uppercase tracking-wider border rounded-sm transition-all cursor-pointer flex items-center gap-1 ${
+              className={`px-1.5 sm:px-2 py-1 text-[8px] sm:text-[9px] font-mono font-black uppercase tracking-wider border rounded-sm transition-all cursor-pointer flex items-center gap-1 ${
                 isRegistrationLocked
                   ? 'bg-red-950 border-red-500 text-red-200 animate-pulse'
                   : 'bg-emerald-950/60 border-emerald-500/80 text-emerald-300'
               }`}
               title="Admin: Lock or Unlock Signups for Special Event Sessions"
             >
-              {isRegistrationLocked ? '🔒 REG: LOCKED' : '🔓 REG: OPEN'}
+              {isRegistrationLocked ? '🔒 LOCKED' : '🔓 OPEN'}
             </button>
           )}
 
@@ -9236,38 +9405,48 @@ export default function App() {
           <button
             type="button"
             onClick={() => { sounds.playSelect(); setShowMoonPhaseModal(true); }}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border transition-all cursor-pointer font-mono text-xs ${
+            className={`flex items-center gap-1 px-2 py-1 rounded-full border transition-all cursor-pointer font-mono text-xs ${
               effectiveMoon.phaseName === 'Full Moon' || effectiveMoon.illumination >= 0.92
-                ? 'bg-red-950/40 border-red-500 text-white shadow-[0_0_18px_rgba(255,0,43,0.65)] animate-pulse'
+                ? 'bg-red-950/40 border-red-500 text-white shadow-[0_0_14px_rgba(255,0,43,0.65)] animate-pulse'
                 : 'bg-white/5 border-white/20 text-white hover:border-white/40 hover:bg-white/10'
             }`}
             title="Open Real-Time Lunar Phase Database Controller"
           >
-            <span className="text-base leading-none">{effectiveMoon.symbol}</span>
-            <span className="text-white font-bold text-[11px]">{effectiveMoon.phaseName}</span>
-            <span className="text-zinc-400 font-bold text-[9px] hidden sm:inline">{(effectiveMoon.illumination * 100).toFixed(0)}%</span>
-            <span className="text-[7px] bg-red-600 text-white font-black px-1 py-0.2 uppercase rounded-xs">DB SYNC</span>
+            <span className="text-sm leading-none">{effectiveMoon.symbol}</span>
+            <span className="text-white font-bold text-[10px] sm:text-[11px] truncate max-w-[80px] sm:max-w-none">{effectiveMoon.phaseName}</span>
+            <span className="text-zinc-400 font-bold text-[8.5px] hidden md:inline">{(effectiveMoon.illumination * 100).toFixed(0)}%</span>
+            <span className="text-[6.5px] sm:text-[7px] bg-red-600 text-white font-black px-1 py-0.2 uppercase rounded-xs hidden xs:inline">DB</span>
           </button>
 
           {/* Sound toggle button */}
           <button 
             id="audio-mute-btn"
             onClick={toggleMute}
-            className="w-8 h-8 sm:w-9 sm:h-9 border border-white/20 flex items-center justify-center rounded-sm hover:border-white transition-colors bg-white/5"
+            className="w-7 h-7 sm:w-8 sm:h-8 border border-white/20 flex items-center justify-center rounded-sm hover:border-white transition-colors bg-white/5 shrink-0"
             title="Toggle Audio Feedback"
           >
-            {isMuted ? <VolumeX className="w-3.5 h-3.5 text-white/50" /> : <Volume2 className="w-3.5 h-3.5 text-white animate-pulse" />}
+            {isMuted ? <VolumeX className="w-3 h-3 text-white/50" /> : <Volume2 className="w-3 h-3 text-white animate-pulse" />}
           </button>
 
-          {/* Quick Radio Audio Play/Pause Button */}
+          {/* Quick Radio Audio Play/Pause Button with Instant Direct Audio Unlock */}
           <button 
             id="radio-header-toggle-btn"
             type="button"
             onClick={() => {
               sounds.playSelect();
+              userManuallyPausedRef.current = isRadioPlaying;
               setIsRadioPlaying(!isRadioPlaying);
+              const activeAudio = (activeDeckTagRef.current === 'primary' ? radioAudioRef.current : secondaryAudioRef.current) || radioAudioRef.current;
+              if (activeAudio) {
+                if (!isRadioPlaying) {
+                  activeAudio.volume = clampVol(radioVolume);
+                  activeAudio.play().catch(() => {});
+                } else {
+                  activeAudio.pause();
+                }
+              }
             }}
-            className={`h-8 sm:h-9 px-2 sm:px-2.5 border flex items-center gap-1.5 rounded-sm transition-all text-[9px] sm:text-[10px] font-mono uppercase font-black cursor-pointer ${
+            className={`h-7 sm:h-8 px-2 sm:px-2.5 border flex items-center gap-1.5 rounded-sm transition-all text-[8.5px] sm:text-[9.5px] font-mono uppercase font-black cursor-pointer shrink-0 ${
               isRadioPlaying
                 ? 'bg-red-600/20 border-red-500/60 text-white shadow-[0_0_12px_rgba(239,68,68,0.3)]'
                 : 'bg-white/5 border-white/20 text-zinc-400 hover:text-white hover:border-white/40'
@@ -9277,19 +9456,19 @@ export default function App() {
           >
             {isRadioPlaying ? (
               <>
-                <Pause className="w-3 h-3 text-red-500 fill-red-500 animate-pulse shrink-0" />
+                <Pause className="w-2.5 h-2.5 text-red-500 fill-red-500 animate-pulse shrink-0" />
                 <span className="hidden sm:inline text-red-400">PAUSE AUDIO</span>
               </>
             ) : (
               <>
-                <Play className="w-3 h-3 text-zinc-300 fill-zinc-300 shrink-0" />
+                <Play className="w-2.5 h-2.5 text-zinc-300 fill-zinc-300 shrink-0" />
                 <span className="hidden sm:inline text-zinc-300">PLAY AUDIO</span>
               </>
             )}
           </button>
 
           {/* District Select Picker Dropdown */}
-          <div id="district-picker" className="flex items-center bg-white/5 border border-white/20 px-2 py-1 rounded-sm">
+          <div id="district-picker" className="flex items-center bg-white/5 border border-white/20 px-1.5 py-0.5 sm:py-1 rounded-sm shrink-0">
             <select
               value={currentDistrictId}
               onChange={(e) => {
@@ -9300,40 +9479,40 @@ export default function App() {
                   handleDistrictChange(e.target.value);
                 }
               }}
-              className="bg-black text-white text-[11px] font-bold font-grotesk border-none outline-none focus:ring-0 cursor-pointer uppercase pr-1"
+              className="bg-black text-white text-[10px] sm:text-[11px] font-bold font-grotesk border-none outline-none focus:ring-0 cursor-pointer uppercase pr-1"
             >
               {sortedDistrictsList.map((d: any) => (
                 <option key={d.id} value={d.id}>
                   {d.name.toUpperCase()} [{d.id.toUpperCase()}]
                 </option>
               ))}
-              <option value="ADD_NEW_OTHER">Other... [Deploy Custom Sector]</option>
+              <option value="ADD_NEW_OTHER">Other... [Sector]</option>
             </select>
           </div>
 
-          <div id="timezone-clock" className="text-right border-l border-white/10 pl-2 hidden md:block">
-            <div className="text-[7.5px] uppercase tracking-widest text-white/40 font-mono">Local Time</div>
-            <div className="text-xs font-mono leading-none font-bold text-white tracking-wider">{timeString}</div>
+          <div id="timezone-clock" className="text-right border-l border-white/10 pl-2 hidden md:block shrink-0">
+            <div className="text-[7px] uppercase tracking-widest text-white/40 font-mono">Local Time</div>
+            <div className="text-[11px] font-mono leading-none font-bold text-white tracking-wider">{timeString}</div>
           </div>
 
           <button 
             onClick={handleSignOut}
-            className="w-8 h-8 sm:w-9 sm:h-9 border border-red-600/40 hover:border-red-600 flex items-center justify-center rounded-sm hover:bg-red-950/20 transition-colors"
+            className="w-7 h-7 sm:w-8 sm:h-8 border border-red-600/40 hover:border-red-600 flex items-center justify-center rounded-sm hover:bg-red-950/20 transition-colors shrink-0"
             title="Terminate Connection"
           >
-            <LogOut className="w-3.5 h-3.5 text-red-500" />
+            <LogOut className="w-3 h-3 text-red-500" />
           </button>
         </div>
       </header>
 
       {/* MOBILE-TABLET IMMERSIVE NAVIGATION DECK */}
-      <div id="navigation-deck" className="lg:hidden bg-black border-b border-white/10 p-2 font-mono flex items-center justify-around gap-2 z-20 select-none">
+      <div id="navigation-deck" className="lg:hidden bg-black border-b border-white/10 p-1.5 font-mono flex items-center justify-around gap-1.5 z-20 select-none">
         <button
           type="button"
           onClick={() => { sounds.playSelect(); setActiveMobileView('profile'); }}
-          className={`flex-1 min-h-[44px] py-2 px-3 text-[10px] sm:text-xs tracking-widest font-black uppercase text-center border transition-all cursor-pointer rounded-xs flex items-center justify-center tv-focusable ${
+          className={`flex-1 min-h-[38px] py-1.5 px-2 text-[10px] sm:text-xs tracking-wider font-black uppercase text-center border transition-all cursor-pointer rounded-xs flex items-center justify-center tv-focusable ${
             activeMobileView === 'profile' 
-              ? 'bg-red-600 text-white border-red-500 font-extrabold shadow-[0_0_14px_rgba(255,0,43,0.6)]' 
+              ? 'bg-red-600 text-white border-red-500 font-extrabold shadow-[0_0_12px_rgba(255,0,43,0.6)]' 
               : 'bg-black/60 text-zinc-400 border-white/10 hover:text-white hover:bg-zinc-900'
           }`}
         >
@@ -9342,9 +9521,9 @@ export default function App() {
         <button
           type="button"
           onClick={() => { sounds.playSelect(); setActiveMobileView('map'); }}
-          className={`flex-1 min-h-[44px] py-2 px-3 text-[10px] sm:text-xs tracking-widest font-black uppercase text-center border transition-all cursor-pointer rounded-xs flex items-center justify-center tv-focusable ${
+          className={`flex-1 min-h-[38px] py-1.5 px-2 text-[10px] sm:text-xs tracking-wider font-black uppercase text-center border transition-all cursor-pointer rounded-xs flex items-center justify-center tv-focusable ${
             activeMobileView === 'map' 
-              ? 'bg-red-600 text-white border-red-500 font-extrabold shadow-[0_0_14px_rgba(255,0,43,0.6)]' 
+              ? 'bg-red-600 text-white border-red-500 font-extrabold shadow-[0_0_12px_rgba(255,0,43,0.6)]' 
               : 'bg-black/60 text-zinc-400 border-white/10 hover:text-white hover:bg-zinc-900'
           }`}
         >
@@ -9353,15 +9532,15 @@ export default function App() {
         <button
           type="button"
           onClick={() => { sounds.playSelect(); setActiveMobileView('challenges'); }}
-          className={`flex-1 min-h-[44px] py-2 px-3 text-[10px] sm:text-xs tracking-widest font-black uppercase text-center border transition-all cursor-pointer rounded-xs flex items-center justify-center gap-1.5 tv-focusable ${
+          className={`flex-1 min-h-[38px] py-1.5 px-2 text-[10px] sm:text-xs tracking-wider font-black uppercase text-center border transition-all cursor-pointer rounded-xs flex items-center justify-center gap-1.5 tv-focusable ${
             activeMobileView === 'challenges' 
-              ? 'bg-red-600 text-white border-red-500 font-extrabold shadow-[0_0_14px_rgba(255,0,43,0.6)]' 
+              ? 'bg-red-600 text-white border-red-500 font-extrabold shadow-[0_0_12px_rgba(255,0,43,0.6)]' 
               : 'bg-black/60 text-zinc-400 border-white/10 hover:text-white hover:bg-zinc-900'
           }`}
         >
           Intel
           {personalChallenges.filter(c => c.status !== 'completed').length > 0 && (
-            <span className="bg-white text-black px-1.5 py-0.5 rounded-full text-[8px] font-black animate-pulse font-mono">
+            <span className="bg-white text-black px-1.5 py-0.5 rounded-full text-[7.5px] font-black animate-pulse font-mono">
               {personalChallenges.filter(c => c.status !== 'completed').length}
             </span>
           )}
@@ -9372,10 +9551,10 @@ export default function App() {
       <main id="main-grid" className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-px bg-white/10 overflow-y-auto lg:overflow-hidden h-auto lg:h-[calc(100dvh-64px)] 2xl:h-[calc(100dvh-76px)]">
         
         {/* LEFT COLUMN: PLAYER REGISTRATION, REPUTATION, ADDBUTTONS, VERIFICATION FRIENDS (3 columns) */}
-        <section id="sidebar-profile" className={`col-span-1 lg:col-span-3 bg-black p-4 sm:p-6 2xl:p-8 tv:p-10 flex flex-col justify-between border-b lg:border-b-0 lg:border-r border-white/10 overflow-y-auto space-y-6 2xl:space-y-8 tv:space-y-10 custom-scrollbar ${
+        <section id="sidebar-profile" className={`col-span-1 lg:col-span-3 bg-black p-3 sm:p-4 lg:p-4 2xl:p-6 tv:p-8 flex flex-col justify-between border-b lg:border-b-0 lg:border-r border-white/10 overflow-y-auto space-y-4 lg:space-y-4 2xl:space-y-6 tv:space-y-8 custom-scrollbar ${
           activeMobileView === 'profile' ? 'flex' : 'hidden lg:flex'
         }`}>
-          <div className="space-y-6">
+          <div className="space-y-4 sm:space-y-5">
             
             {/* Active Nomad Level Card */}
             <div id="level-badge" className="border-2 border-white p-1 inline-block transform -rotate-1 relative bg-black">
@@ -13503,17 +13682,17 @@ export default function App() {
             />
 
             {/* Scoreboards */}
-            <div id="leaderboard-inner-body" className="flex flex-col flex-1 min-h-[220px]">
-              <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between select-none bg-black">
+            <div id="leaderboard-inner-body" className="flex flex-col flex-1 min-h-[180px]">
+              <div className="px-3 sm:px-4 py-2.5 sm:py-3 border-b border-white/10 flex items-center justify-between select-none bg-black">
                 <div className="flex flex-col">
-                  <h3 className="text-base font-black italic uppercase font-syne tracking-tight text-white">Active Void Board</h3>
-                  <span className="text-[8px] text-[#ffffff]/40 tracking-wider font-mono">Global performance rankings</span>
+                  <h3 className="text-sm sm:text-base font-black italic uppercase font-syne tracking-tight text-white">Active Void Board</h3>
+                  <span className="text-[7.5px] sm:text-[8px] text-[#ffffff]/40 tracking-wider font-mono">Global performance rankings</span>
                 </div>
-                <span className="text-[8px] bg-white text-black px-1.5 py-0.5 font-black font-grotesk tracking-widest">GLOBAL SHREDDERS</span>
+                <span className="text-[7.5px] sm:text-[8px] bg-white text-black px-1.5 py-0.5 font-black font-grotesk tracking-widest">GLOBAL SHREDDERS</span>
               </div>
 
               {/* Ranks list */}
-              <div className="flex-1 overflow-y-auto max-h-[700px] min-h-[480px] p-6 space-y-3 font-mono custom-scrollbar">
+              <div className="flex-1 overflow-y-auto max-h-[600px] min-h-[260px] p-3 sm:p-4 space-y-2 sm:space-y-2.5 font-mono custom-scrollbar">
                 {allSkaters.map((sk, index) => {
                   const isSelf = sk.id === currentUser?.uid;
                   const rank = index + 1;
@@ -14323,7 +14502,7 @@ export default function App() {
       {/* WAWOLORADIO MAIN FLOATING DECK */}
       {
         isRadioMinimized ? (
-          <div className="fixed bottom-4 left-4 z-[999] bg-[#050505]/95 border border-white/20 p-2 shadow-[0_6px_20px_rgba(0,0,0,0.85)] w-[265px] font-mono rounded-xs select-none backdrop-blur-md flex items-center justify-between gap-2.5 transition-all duration-300 hover:border-white/40">
+          <div className="fixed bottom-2.5 left-2.5 right-2.5 sm:right-auto sm:bottom-4 sm:left-4 z-[999] bg-[#050505]/95 border border-white/20 p-1.5 sm:p-2 shadow-[0_6px_20px_rgba(0,0,0,0.85)] w-auto sm:w-[270px] max-w-[calc(100vw-1.25rem)] font-mono rounded-xs select-none backdrop-blur-md flex items-center justify-between gap-2 transition-all duration-300 hover:border-white/40">
             <div className="flex items-center gap-2 min-w-0 flex-1">
               {/* Play/Pause control */}
               {wawoloTracks.length > 0 ? (
@@ -14331,10 +14510,22 @@ export default function App() {
                   type="button"
                   onClick={() => {
                     sounds.playSelect();
-                    setIsRadioPlaying(!isRadioPlaying);
+                    const activeAudio = (activeDeckTagRef.current === 'primary' ? radioAudioRef.current : secondaryAudioRef.current) || radioAudioRef.current;
+                    if (isRadioPlaying) {
+                      userManuallyPausedRef.current = true;
+                      setIsRadioPlaying(false);
+                      if (activeAudio) activeAudio.pause();
+                    } else {
+                      userManuallyPausedRef.current = false;
+                      setIsRadioPlaying(true);
+                      if (activeAudio) {
+                        activeAudio.volume = clampVol(radioVolume);
+                        activeAudio.play().catch(() => {});
+                      }
+                    }
                   }}
                   className="w-6.5 h-6.5 flex items-center justify-center bg-zinc-900 border border-white/10 hover:border-white text-white/80 hover:text-white cursor-pointer active:scale-95 transition-all shrink-0 rounded-xs"
-                  title={isRadioPlaying ? "Mute Radio" : "Tune In"}
+                  title={isRadioPlaying ? "Pause Radio" : "Tune In Live"}
                 >
                   {isRadioPlaying ? <Pause className="w-2.5 h-2.5 text-emerald-400" /> : <Play className="w-2.5 h-2.5 fill-current" />}
                 </button>
@@ -14377,7 +14568,7 @@ export default function App() {
             </button>
           </div>
         ) : (
-          <div className="fixed bottom-4 left-4 z-[999] bg-[#050505]/95 border-2 border-white/20 p-3 shadow-[0_8px_32px_rgba(0,0,0,0.85)] w-[calc(100vw-2rem)] sm:w-[350px] max-w-[360px] font-mono rounded-xs select-none backdrop-blur-md overflow-hidden">
+          <div className="fixed bottom-2 left-2 right-2 sm:right-auto sm:bottom-4 sm:left-4 z-[999] bg-[#050505]/95 border-2 border-white/20 p-2.5 sm:p-3 shadow-[0_8px_32px_rgba(0,0,0,0.85)] w-auto sm:w-[350px] max-w-[calc(100vw-1rem)] max-h-[85dvh] flex flex-col font-mono rounded-xs select-none backdrop-blur-md overflow-y-auto custom-scrollbar">
             {/* Ticker / Header line */}
             <div className="flex items-center justify-between border-b border-white/10 pb-1.5 mb-2">
               <div className="flex items-center gap-1.5">
@@ -14624,10 +14815,22 @@ export default function App() {
                       type="button"
                       onClick={() => {
                         sounds.playSelect();
-                        setIsRadioPlaying(!isRadioPlaying);
+                        const activeAudio = (activeDeckTagRef.current === 'primary' ? radioAudioRef.current : secondaryAudioRef.current) || radioAudioRef.current;
+                        if (isRadioPlaying) {
+                          userManuallyPausedRef.current = true;
+                          setIsRadioPlaying(false);
+                          if (activeAudio) activeAudio.pause();
+                        } else {
+                          userManuallyPausedRef.current = false;
+                          setIsRadioPlaying(true);
+                          if (activeAudio) {
+                            activeAudio.volume = clampVol(radioVolume);
+                            activeAudio.play().catch(() => {});
+                          }
+                        }
                       }}
                       className="w-8 h-8 flex items-center justify-center bg-zinc-900 border border-white/10 hover:border-white text-white/80 hover:text-white cursor-pointer active:scale-95 transition-all font-bold text-[11px] shrink-0 rounded-xs"
-                      title={isRadioPlaying ? "Mute Radio" : "Tune In"}
+                      title={isRadioPlaying ? "Pause Radio" : "Tune In Live"}
                     >
                       {isRadioPlaying ? <Pause className="w-3.5 h-3.5 text-emerald-400" /> : <Play className="w-3.5 h-3.5 fill-current" />}
                     </button>
@@ -14878,9 +15081,19 @@ export default function App() {
                               className="min-w-0 flex-1 pl-1 cursor-pointer group/track hover:opacity-90"
                               onClick={() => {
                                 sounds.playSelect();
+                                userManuallyPausedRef.current = false;
                                 setCurrentTrackIndex(idx);
-                                if (!isRadioPlaying) {
-                                  setIsRadioPlaying(true);
+                                setIsRadioPlaying(true);
+                                const activeAudio = (activeDeckTagRef.current === 'primary' ? radioAudioRef.current : secondaryAudioRef.current) || radioAudioRef.current;
+                                if (activeAudio) {
+                                  const trackSrc = track.url.startsWith('http') ? track.url : window.location.origin + track.url;
+                                  if (activeAudio.src !== trackSrc) {
+                                    activeAudio.src = trackSrc;
+                                    activeAudio.preload = "auto";
+                                  }
+                                  try { activeAudio.currentTime = 0; } catch (e) {}
+                                  activeAudio.volume = clampVol(radioVolume);
+                                  activeAudio.play().catch(() => {});
                                 }
                                 addTickerMessage(`[RADIO] NOW BROADCASTING: ${track.title.toUpperCase()}`);
                               }}
@@ -15247,9 +15460,22 @@ export default function App() {
                       <form 
                         onSubmit={async (e) => {
                           e.preventDefault();
-                          if (!newTrackTitle.trim() || !newTrackArtist.trim()) {
-                            setUploadTrackError("Title and Artist are required");
+                          const defaultArtist = radioCurator?.name || profile?.handle?.replace(/^@/, '') || "MOONSURFERS";
+                          let finalTitle = newTrackTitle.trim();
+                          let finalArtist = newTrackArtist.trim();
+
+                          if (newTrackFile && (!finalTitle || !finalArtist)) {
+                            const parsed = parseAudioFilename(newTrackFile.name, defaultArtist);
+                            if (!finalTitle) finalTitle = parsed.title;
+                            if (!finalArtist) finalArtist = parsed.artist;
+                          }
+
+                          if (!finalTitle) {
+                            setUploadTrackError("Track title is required or select an audio file");
                             return;
+                          }
+                          if (!finalArtist) {
+                            finalArtist = defaultArtist;
                           }
                           if (!newTrackFile && !newTrackUrl.trim()) {
                             setUploadTrackError("Select an audio file or enter a stream link");
@@ -15269,7 +15495,7 @@ export default function App() {
                             let uploadedTrackData: any = null;
 
                             if (newTrackFile) {
-                              setUploadProgress(25);
+                              setUploadProgress(20);
                               setUploadStatusStep("Reading audio metadata...");
                               try {
                                 const tempAudio = new Audio();
@@ -15297,43 +15523,34 @@ export default function App() {
                               } catch (e) {}
 
                               const trackId = `track_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-                              setUploadProgress(50);
-                              setUploadStatusStep("Fast streaming audio to server...");
+                              setUploadStatusStep("Fast streaming audio from device...");
 
-                              // High-speed direct binary upload
-                              const qParams = new URLSearchParams({
+                              // High-speed direct binary upload with live XHR byte progress
+                              const uploadRes = await uploadAudioWithProgress(
+                                newTrackFile,
                                 trackId,
-                                title: newTrackTitle.trim(),
-                                artist: newTrackArtist.trim(),
-                                duration: duration.toString(),
-                                email: emailToSend,
-                                handle: handleToSend,
-                                mimeType: newTrackFile.type || "audio/mpeg"
-                              });
+                                finalTitle,
+                                finalArtist,
+                                duration,
+                                emailToSend,
+                                handleToSend,
+                                (pct) => {
+                                  const displayPct = 20 + Math.round((pct / 100) * 75);
+                                  setUploadProgress(displayPct);
+                                }
+                              );
 
-                              const singleRes = await fetch(`/api/music/upload-file?${qParams.toString()}`, {
-                                method: "POST",
-                                headers: { 
-                                  "Content-Type": newTrackFile.type || "audio/mpeg",
-                                  "x-admin-key": "moonsurfers",
-                                  "x-dj-auth": "true",
-                                  "x-admin-handle": handleToSend,
-                                  "x-admin-email": emailToSend
-                                },
-                                body: newTrackFile
-                              });
-
-                              const parsedSingle = await safeParseJsonResponse(singleRes);
-                              if (parsedSingle.success && parsedSingle.data?.track) {
-                                uploadedTrackData = parsedSingle.data.track;
+                              if (uploadRes.success && uploadRes.track) {
+                                uploadedTrackData = uploadRes.track;
                               } else {
                                 // Fallback to Supabase if local server upload failed
+                                setUploadStatusStep("Retrying via cloud storage fallback...");
                                 const supabaseUrl = await uploadMusicFileToSupabase(newTrackFile, trackId);
                                 if (supabaseUrl) {
                                   uploadedTrackData = {
                                     id: trackId,
-                                    title: newTrackTitle.trim(),
-                                    artist: newTrackArtist.trim(),
+                                    title: finalTitle,
+                                    artist: finalArtist,
                                     url: supabaseUrl,
                                     isUploaded: true,
                                     duration,
@@ -15510,27 +15727,40 @@ export default function App() {
                             className="w-full bg-black border border-white/10 text-white p-1.5 text-[9px] outline-none focus:border-red-500 font-mono"
                           />
                         ) : (
-                          <div className="border border-dashed border-white/25 hover:border-white/45 p-2 text-center rounded-xs cursor-pointer relative bg-zinc-950">
+                          <div className="border border-dashed border-red-500/40 hover:border-red-400 p-2.5 text-center rounded-xs cursor-pointer relative bg-zinc-950/80 transition-all">
                             <input
                               type="file"
-                              accept="audio/*,audio/mpeg,audio/mp3,audio/wav,audio/m4a,audio/aac,audio/ogg"
+                              accept="audio/*,.mp3,.wav,.m4a,.aac,.flac,.ogg,.mp4,.webm"
                               required={!newTrackUrl}
                               onChange={(e) => {
                                 if (e.target.files && e.target.files[0]) {
                                   const file = e.target.files[0];
                                   setUploadTrackError(null);
                                   setNewTrackFile(file);
+                                  const defaultArtist = radioCurator?.name || profile?.handle?.replace(/^@/, '') || "MOONSURFERS";
+                                  const parsed = parseAudioFilename(file.name, defaultArtist);
+                                  if (!newTrackTitle.trim()) {
+                                    setNewTrackTitle(parsed.title);
+                                  }
+                                  if (!newTrackArtist.trim()) {
+                                    setNewTrackArtist(parsed.artist);
+                                  }
                                 }
                               }}
                               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                             />
                             <div className="text-[8.5px] text-zinc-300 uppercase font-mono">
                               {newTrackFile ? (
-                                <span className="text-white font-bold">
-                                  📁 {newTrackFile.name} ({(newTrackFile.size / (1024 * 1024)).toFixed(2)} MB)
+                                <span className="text-white font-bold flex items-center justify-center gap-1">
+                                  <span>🎵</span>
+                                  <span className="text-red-400">{newTrackFile.name}</span>
+                                  <span className="text-zinc-500">({(newTrackFile.size / (1024 * 1024)).toFixed(2)} MB)</span>
                                 </span>
                               ) : (
-                                "Select Audio File (MP3, WAV, M4A, FLAC)"
+                                <span className="flex items-center justify-center gap-1.5 text-zinc-400 hover:text-white">
+                                  <span>📁</span>
+                                  <span>Tap to choose audio file from device (MP3, WAV, M4A, FLAC)</span>
+                                </span>
                               )}
                             </div>
                           </div>

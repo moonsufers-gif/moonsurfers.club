@@ -15,10 +15,26 @@ export default defineConfig(() => {
       },
     },
     build: {
-      target: ['es2015', 'chrome60', 'edge79', 'firefox60', 'safari11'],
-      cssTarget: ['chrome60', 'firefox60', 'safari11', 'edge79'],
+      target: 'es2020',
       minify: 'esbuild' as const,
-      sourcemap: false
+      sourcemap: false,
+      chunkSizeWarningLimit: 1200,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              if (id.includes('three')) return 'vendor-three';
+              if (id.includes('@vis.gl') || id.includes('google-maps')) return 'vendor-maps';
+              if (id.includes('recharts') || id.includes('d3-')) return 'vendor-charts';
+              if (id.includes('firebase')) return 'vendor-firebase';
+              if (id.includes('@supabase')) return 'vendor-supabase';
+              if (id.includes('lucide-react')) return 'vendor-icons';
+              if (id.includes('motion')) return 'vendor-motion';
+              return 'vendor-core';
+            }
+          }
+        }
+      }
     },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
