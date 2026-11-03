@@ -207,15 +207,23 @@ async function startServer() {
   // Trust proxy headers for accurate client IP rate-limiting behind cloud proxy
   app.set("trust proxy", 1);
 
-  // Enable GZIP / Deflate response compression for ultra fast response times under load
-  app.use(compression());
+  // Enable GZIP / Deflate response compression for ultra fast response times under load, bypassing streaming audio & video
+  app.use(compression({
+    filter: (req, res) => {
+      if (req.headers.range || req.path.startsWith('/api/music') || req.path.startsWith('/api/video')) {
+        return false;
+      }
+      return compression.filter(req, res);
+    }
+  }));
 
-  // CORS & Security headers supporting custom domain moonsurfers.network
+  // CORS & Security headers supporting custom domain moonsurfers.network & preview iframes
   app.use((req, res, next) => {
     const origin = req.headers.origin || "*";
     res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Range, X-Requested-With");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Range, X-Requested-With, x-admin-key, x-dj-auth, x-admin-handle, x-admin-email, x-track-title, x-track-artist, x-track-duration, x-track-id, x-chunk-index, x-total-chunks, If-None-Match");
+    res.setHeader("Access-Control-Expose-Headers", "Content-Range, Accept-Ranges, Content-Length, ETag, X-Content-Type-Options");
     res.setHeader("Access-Control-Allow-Credentials", "true");
     if (req.method === "OPTIONS") {
       return res.sendStatus(204);
@@ -2593,19 +2601,7 @@ Return a rigorous JSON object matching this schema exactly:
       const currentPlayback = getRadioPlaybackState(activeTracks);
       const curator = await getCuratorInfo();
 
-      // Ensure Firestore system_config/wawoloradio_state always holds the broadcast clock
-      try {
-        db.collection("system_config").doc("wawoloradio_state").set({
-          isPlaying: currentPlayback.isPlaying,
-          currentTrackIndex: currentPlayback.currentTrackIndex,
-          currentTrackId: currentPlayback.currentTrackId,
-          trackStartedAt: currentPlayback.trackStartedAt,
-          elapsedMs: currentPlayback.elapsedMs,
-          durationMs: currentPlayback.durationMs,
-          activePlaylistId: radioState.activePlaylistId || null,
-          updatedAt: new Date().toISOString()
-        }, { merge: true }).catch(() => {});
-      } catch (e) {}
+      // Note: Pure read for ultra-fast, zero-delay client status queries (state writes occur on changes only)
 
       res.json({
         success: true,

@@ -66,7 +66,8 @@ import {
   ChevronUp,
   ChevronDown,
   Headphones,
-  Edit3
+  Edit3,
+  Key
 } from 'lucide-react';
 import {
   auth,
@@ -3144,11 +3145,33 @@ export default function App() {
           const data = await res.json();
           if (data.success) {
             loadedFromApi = true;
-            setWawoloTracks(data.tracks || []);
-            setAllTracks(data.allTracks || data.tracks || []);
+            const tracksList = data.tracks || [];
+            setWawoloTracks(tracksList);
+            setAllTracks(data.allTracks || tracksList);
             setPlaylists(data.playlists || []);
             setActivePlaylist(data.activePlaylist || null);
             setRadioPlaybackState(data.radioState);
+
+            // Proactively warm up decks so audio elements are already buffered in memory before play is pressed
+            if (tracksList.length > 0) {
+              const t0 = tracksList[0];
+              const t0Src = t0.url.startsWith('http') ? t0.url : window.location.origin + t0.url;
+              if (!radioAudioRef.current) radioAudioRef.current = new Audio();
+              if (!radioAudioRef.current.src || radioAudioRef.current.src === "") {
+                radioAudioRef.current.src = t0Src;
+                radioAudioRef.current.preload = "auto";
+              }
+              if (tracksList.length > 1) {
+                const t1 = tracksList[1];
+                const t1Src = t1.url.startsWith('http') ? t1.url : window.location.origin + t1.url;
+                if (!secondaryAudioRef.current) secondaryAudioRef.current = new Audio();
+                if (!secondaryAudioRef.current.src || secondaryAudioRef.current.src === "") {
+                  secondaryAudioRef.current.src = t1Src;
+                  secondaryAudioRef.current.preload = "auto";
+                }
+              }
+            }
+
             if (data.curator) {
               setRadioCurator(data.curator);
               setCuratorName(data.curator.name || "RESIDENT DJ NOMAD");
@@ -3823,9 +3846,11 @@ export default function App() {
         // ZERO-DELAY DUAL-DECK SEAMLESS CROSS-FADE WITH NEXT-TRACK PRELOAD
         const doCrossfade = async () => {
           try {
-            // Direct native HTTP range audio streaming without Cache API blob delay
-            inactiveAudio.src = targetSrc;
-            inactiveAudio.preload = "auto";
+            // Direct native HTTP range audio streaming - preserve buffer if already preloaded
+            if (inactiveAudio.src !== targetSrc) {
+              inactiveAudio.src = targetSrc;
+              inactiveAudio.preload = "auto";
+            }
             
             const isOutgoingActive = !activeAudio.paused && activeAudio.currentTime > 0;
 
@@ -3834,8 +3859,8 @@ export default function App() {
               inactiveAudio.volume = 0;
               await inactiveAudio.play();
               
-              // Snappy 600ms equal-power DJ crossfade for smooth, instant transitions
-              const crossfadeDurationMs = 600;
+              // Snappy 500ms equal-power DJ crossfade for smooth, instant transitions
+              const crossfadeDurationMs = 500;
               const startTime = Date.now();
               const startOutVol = clampVol(activeAudio.volume);
               const targetInVol = clampVol(radioVolume);
@@ -3864,24 +3889,13 @@ export default function App() {
             } else {
               // Instant playback start with zero artificial delay
               inactiveAudio.volume = clampVol(radioVolume);
-              if (startPosition > 1) {
-                // Smooth non-blocking live position calibration once buffered
-                const calibrateLivePos = () => {
-                  try {
-                    if (inactiveAudio.currentTime < 1) {
-                      inactiveAudio.currentTime = startPosition;
-                    }
-                  } catch (e) {}
-                };
-                if (inactiveAudio.readyState >= 2) {
-                  calibrateLivePos();
-                } else {
-                  inactiveAudio.addEventListener("canplay", calibrateLivePos, { once: true });
+              try {
+                if (inactiveAudio.paused) {
+                  await inactiveAudio.play();
                 }
-              } else {
-                try { inactiveAudio.currentTime = 0; } catch (e) {}
+              } catch (playErr) {
+                console.warn("[RADIO] Playback waiting for user gesture:", playErr);
               }
-              await inactiveAudio.play();
             }
 
             // Flip active deck tag cleanly
@@ -3892,9 +3906,11 @@ export default function App() {
             const nextTrackObj = wawoloTracks[nextIdx];
             if (nextTrackObj && wawoloTracks.length > 1) {
               const nextSrc = nextTrackObj.url.startsWith('http') ? nextTrackObj.url : window.location.origin + nextTrackObj.url;
-              activeAudio.src = nextSrc;
-              activeAudio.preload = "auto";
-              try { activeAudio.load(); } catch (e) {}
+              if (activeAudio.src !== nextSrc) {
+                activeAudio.src = nextSrc;
+                activeAudio.preload = "auto";
+                try { activeAudio.load(); } catch (e) {}
+              }
             }
           } catch (err) {
             console.warn("[RADIO] Dual-deck transition warning:", err);
@@ -3910,10 +3926,6 @@ export default function App() {
         doCrossfade();
       } else if (!isCrossfadingRef.current) {
         if (activeAudio.paused && !userManuallyPausedRef.current) {
-          const liveStreamElapsedSec = live.elapsedSec;
-          if (liveStreamElapsedSec > 0 && Math.abs(activeAudio.currentTime - liveStreamElapsedSec) > 2) {
-            try { activeAudio.currentTime = liveStreamElapsedSec; } catch (e) {}
-          }
           activeAudio.volume = clampVol(radioVolume);
           activeAudio.play().catch(err => console.warn("[RADIO] Resume play failed:", err));
         }
@@ -4074,7 +4086,7 @@ export default function App() {
     Object.entries(DISTRICTS).forEach(([id, dst]) => {
       districtsCopy[id] = {
         ...dst,
-        spots: dst.spots.map(s => ({
+        spots: (dst.spots || []).map(s => ({
           ...s,
           id: (s as any).id || `static_${id}_${s.name.toLowerCase().replace(/\s+/g, '_')}`
         }))
@@ -4838,9 +4850,22 @@ export default function App() {
       }
     }
 
+    const sanitizedBadges = Array.isArray(prof.badges) ? prof.badges : (prof.badges ? [prof.badges] : ['nomad_starter']);
+    const sanitizedFriends = Array.isArray(prof.friends) ? prof.friends : [];
+    if (!prof.badges || !Array.isArray(prof.badges) || !prof.friends || !Array.isArray(prof.friends)) {
+      prof = {
+        ...prof,
+        badges: sanitizedBadges,
+        friends: sanitizedFriends
+      };
+      hasChanged = true;
+    }
+
     if (hasChanged) {
       const updatedProf: SkateProfile = { 
         ...prof, 
+        badges: prof.badges || sanitizedBadges,
+        friends: prof.friends || sanitizedFriends,
         dailyStreak: nextStreak,
         lastStreakUpdate: nextLastUpdate,
         activeLocation: nextActiveLocation,
@@ -4862,7 +4887,11 @@ export default function App() {
       }
       return updatedProf;
     }
-    return prof;
+    return {
+      ...prof,
+      badges: sanitizedBadges,
+      friends: sanitizedFriends
+    };
   };
 
   // ==========================================
@@ -7003,7 +7032,7 @@ export default function App() {
       // Calculate level transition limits
       const updatedTotal = profile.reputation + ch.xpReward;
       const levelBreakpoints = Math.floor(updatedTotal / 1000) + 1;
-      let newBadgesArray = [...profile.badges];
+      let newBadgesArray = [...(profile.badges || [])];
       
       if (levelBreakpoints > profile.level) {
         newBadgesArray.push(`nomad_level_${levelBreakpoints}`);
@@ -7052,7 +7081,7 @@ export default function App() {
           ...prev, 
           reputation: updatedTotal, 
           level: outcome.level,
-          badges: Array.from(new Set([...prev.badges, ...newBadgesArray])),
+          badges: Array.from(new Set([...(prev.badges || []), ...newBadgesArray])),
           dailyStreak: newStreak,
           lastStreakUpdate: todayStr
         };
@@ -7071,7 +7100,7 @@ export default function App() {
       
       const updatedTotal = profile.reputation + xpAmount;
       const levelBreakpoints = Math.floor(updatedTotal / 1000) + 1;
-      let newBadgesArray = [...profile.badges];
+      let newBadgesArray = [...(profile.badges || [])];
       
       if (levelBreakpoints > profile.level) {
         newBadgesArray.push(`nomad_level_${levelBreakpoints}`);
@@ -7085,7 +7114,7 @@ export default function App() {
         ...prev,
         reputation: updatedTotal,
         level: levelBreakpoints > profile.level ? levelBreakpoints : prev.level,
-        badges: Array.from(new Set([...prev.badges, ...newBadgesArray]))
+        badges: Array.from(new Set([...(prev.badges || []), ...newBadgesArray]))
       } : null);
     } catch (err: any) {
       console.error("Failed to award weekly XP:", err);
@@ -7145,7 +7174,7 @@ export default function App() {
       try {
         const updatedTotal = profile.reputation + finalXp;
         const levelBreakpoints = Math.floor(updatedTotal / 1000) + 1;
-        let newBadgesArray = [...profile.badges];
+        let newBadgesArray = [...(profile.badges || [])];
         
         if (levelBreakpoints > profile.level) {
           newBadgesArray.push(`nomad_level_${levelBreakpoints}`);
@@ -7956,7 +7985,7 @@ export default function App() {
       const xpReward = 250;
       const updatedTotal = profile.reputation + xpReward;
       const progressLevel = Math.floor(updatedTotal / 1000) + 1;
-      let newBadgesArray = [...profile.badges];
+      let newBadgesArray = [...(profile.badges || [])];
 
       if (progressLevel > profile.level) {
         newBadgesArray.push(`nomad_level_${progressLevel}`);
@@ -7971,7 +8000,7 @@ export default function App() {
           ...prev, 
           reputation: updatedTotal, 
           level: outcome.level,
-          badges: Array.from(new Set([...prev.badges, ...newBadgesArray]))
+          badges: Array.from(new Set([...(prev.badges || []), ...newBadgesArray]))
         };
       });
 
@@ -8019,7 +8048,7 @@ export default function App() {
         const missionBadge = `mission_completed_${spotSlug}`;
         const updatedTotal = profile.reputation + xpReward;
         const progressLevel = Math.floor(updatedTotal / 1000) + 1;
-        let newBadgesArray = [...profile.badges, missionBadge];
+        let newBadgesArray = [...(profile.badges || []), missionBadge];
 
         if (progressLevel > profile.level) {
           newBadgesArray.push(`nomad_level_${progressLevel}`);
@@ -8075,7 +8104,7 @@ export default function App() {
             ...prev,
             reputation: updatedTotal,
             level: outcome.level,
-            badges: Array.from(new Set([...prev.badges, ...newBadgesArray]))
+            badges: Array.from(new Set([...(prev.badges || []), ...newBadgesArray]))
           };
         });
 
@@ -9132,7 +9161,23 @@ export default function App() {
                     type="button"
                     onClick={() => {
                       sounds.playSelect();
-                      setIsRadioPlaying(!isRadioPlaying);
+                      const nextPlaying = !isRadioPlaying;
+                      userManuallyPausedRef.current = !nextPlaying;
+                      setIsRadioPlaying(nextPlaying);
+                      const activeAudio = (activeDeckTagRef.current === 'primary' ? radioAudioRef.current : secondaryAudioRef.current) || radioAudioRef.current;
+                      if (activeAudio) {
+                        if (nextPlaying) {
+                          if (!activeAudio.src && wawoloTracks.length > 0) {
+                            const curTrack = wawoloTracks[activePlayIndex] || wawoloTracks[0];
+                            activeAudio.src = curTrack.url.startsWith('http') ? curTrack.url : window.location.origin + curTrack.url;
+                            activeAudio.preload = "auto";
+                          }
+                          activeAudio.volume = clampVol(radioVolume);
+                          activeAudio.play().catch(e => console.warn("[RADIO] Playback gesture unlock:", e));
+                        } else {
+                          activeAudio.pause();
+                        }
+                      }
                     }}
                     className={`p-2 text-white rounded-xs transition-all shrink-0 cursor-pointer flex items-center justify-center ${
                       isRadioPlaying && radioPlaybackState?.isPlaying
@@ -9251,7 +9296,26 @@ export default function App() {
 
                 <button
                   type="button"
-                  onClick={() => setIsRadioPlaying(!isRadioPlaying)}
+                  onClick={() => {
+                    sounds.playSelect();
+                    const nextPlaying = !isRadioPlaying;
+                    userManuallyPausedRef.current = !nextPlaying;
+                    setIsRadioPlaying(nextPlaying);
+                    const activeAudio = (activeDeckTagRef.current === 'primary' ? radioAudioRef.current : secondaryAudioRef.current) || radioAudioRef.current;
+                    if (activeAudio) {
+                      if (nextPlaying) {
+                        if (!activeAudio.src && wawoloTracks.length > 0) {
+                          const curTrack = wawoloTracks[activePlayIndex] || wawoloTracks[0];
+                          activeAudio.src = curTrack.url.startsWith('http') ? curTrack.url : window.location.origin + curTrack.url;
+                          activeAudio.preload = "auto";
+                        }
+                        activeAudio.volume = clampVol(radioVolume);
+                        activeAudio.play().catch(e => console.warn("[RADIO] Standby gesture unlock:", e));
+                      } else {
+                        activeAudio.pause();
+                      }
+                    }
+                  }}
                   className={`text-xs px-3 py-1 font-bold uppercase tracking-wider flex items-center gap-1 rounded-xs transition-all cursor-pointer ${
                     isRadioPlaying
                       ? 'bg-amber-500 text-black font-black hover:bg-amber-400'
@@ -9374,29 +9438,29 @@ export default function App() {
       </div>
 
       {/* HEADER BAR - Sleek & Tightened Layout for Maximum Screen Real Estate Across All Devices */}
-      <header id="app-header" className="flex flex-wrap sm:flex-nowrap items-center justify-between px-2 sm:px-4 py-1.5 sm:py-2 border-b border-white/10 gap-1.5 sm:gap-2 bg-black/95 sticky top-0 z-40 backdrop-blur-md">
-        <div id="brand-container" className="flex flex-col w-fit select-none cursor-pointer hover:opacity-90 transition-opacity" onClick={() => { sounds.playSelect(); }}>
-          <div className="flex items-center justify-between w-full font-mono mb-0.5 text-[7.5px] sm:text-[9px] font-bold text-red-500 uppercase tracking-widest gap-2">
-            <span className="bg-red-600/90 text-white font-black text-[6.5px] sm:text-[7.5px] px-1 py-0.2 uppercase tracking-wider rounded-xs italic">
+      <header id="app-header" className="flex items-center justify-between px-2 sm:px-4 py-1 sm:py-1.5 border-b border-white/10 gap-1.5 sm:gap-2 bg-black/95 sticky top-0 z-40 backdrop-blur-md w-full overflow-hidden">
+        <div id="brand-container" className="flex flex-col w-fit select-none cursor-pointer hover:opacity-90 transition-opacity shrink-0" onClick={() => { sounds.playSelect(); }}>
+          <div className="flex items-center justify-between w-full font-mono mb-0.5 text-[7px] sm:text-[8.5px] font-bold text-red-500 uppercase tracking-widest gap-1.5">
+            <span className="bg-red-600/90 text-white font-black text-[6px] sm:text-[7px] px-1 py-0.2 uppercase tracking-wider rounded-xs italic">
               OUTLAW CHANNEL
             </span>
-            <span className="text-red-400 font-extrabold">
+            <span className="text-red-400 font-extrabold hidden xs:inline">
               SEC [{currentDistrictId}]
             </span>
           </div>
-          <div className="flex items-center gap-1.5 sm:gap-2">
-            <Flame className="w-4 h-4 sm:w-5 sm:h-5 text-red-500 fill-red-500/40 animate-pulse drop-shadow-[0_0_12px_rgba(255,0,43,0.95)] shrink-0" />
-            <h1 className="text-lg sm:text-2xl font-black tracking-tighter leading-none italic uppercase font-syne text-white">
+          <div className="flex items-center gap-1 sm:gap-1.5">
+            <Flame className="w-3.5 h-3.5 sm:w-4.5 sm:h-4.5 text-red-500 fill-red-500/40 animate-pulse drop-shadow-[0_0_10px_rgba(255,0,43,0.9)] shrink-0" />
+            <h1 className="text-base sm:text-xl md:text-2xl font-black tracking-tighter leading-none italic uppercase font-syne text-white">
               MOONSURFERS
             </h1>
           </div>
         </div>
 
-        <div id="controls-panel" className="flex items-center justify-end gap-1 sm:gap-2 flex-wrap sm:flex-nowrap select-none ml-auto">
+        <div id="controls-panel" className="flex items-center justify-end gap-1 sm:gap-1.5 select-none ml-auto overflow-x-auto no-scrollbar flex-nowrap shrink min-w-0">
           {/* Offline / Online Network Stream Indicator Component */}
           <div 
             id="network-mode-indicator"
-            className={`flex items-center gap-1 px-1.5 sm:px-2.5 py-1 rounded-sm border font-mono text-[8px] sm:text-[9px] font-black uppercase tracking-wider transition-all select-none ${
+            className={`flex items-center gap-1 px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-sm border font-mono text-[7.5px] sm:text-[8.5px] font-black uppercase tracking-wider transition-all select-none shrink-0 ${
               !isOnline
                 ? 'bg-amber-950/90 border-amber-500/80 text-amber-300 shadow-[0_0_12px_rgba(245,158,11,0.5)] animate-pulse'
                 : 'bg-emerald-950/40 border-emerald-500/40 text-emerald-400'
@@ -9409,12 +9473,12 @@ export default function App() {
           >
             {!isOnline ? (
               <>
-                <WifiOff className="w-3 h-3 text-amber-400 shrink-0 animate-bounce" />
-                <span className="font-extrabold text-amber-300 text-[8px] sm:text-[9px]">OFFLINE</span>
+                <WifiOff className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-amber-400 shrink-0 animate-bounce" />
+                <span className="font-extrabold text-amber-300 text-[7.5px] sm:text-[8.5px]">OFFLINE</span>
               </>
             ) : (
               <>
-                <Wifi className="w-3 h-3 text-emerald-400 shrink-0" />
+                <Wifi className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-emerald-400 shrink-0" />
                 <span className="hidden sm:inline font-bold text-emerald-400">ONLINE</span>
               </>
             )}
@@ -9424,7 +9488,7 @@ export default function App() {
             <button
               type="button"
               onClick={toggleRegistrationLock}
-              className={`px-1.5 sm:px-2 py-1 text-[8px] sm:text-[9px] font-mono font-black uppercase tracking-wider border rounded-sm transition-all cursor-pointer flex items-center gap-1 ${
+              className={`px-1.5 py-0.5 sm:py-1 text-[7.5px] sm:text-[8.5px] font-mono font-black uppercase tracking-wider border rounded-sm transition-all cursor-pointer flex items-center gap-1 shrink-0 ${
                 isRegistrationLocked
                   ? 'bg-red-950 border-red-500 text-red-200 animate-pulse'
                   : 'bg-emerald-950/60 border-emerald-500/80 text-emerald-300'
@@ -9439,27 +9503,27 @@ export default function App() {
           <button
             type="button"
             onClick={() => { sounds.playSelect(); setShowMoonPhaseModal(true); }}
-            className={`flex items-center gap-1 px-2 py-1 rounded-full border transition-all cursor-pointer font-mono text-xs ${
+            className={`flex items-center gap-1 px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-full border transition-all cursor-pointer font-mono text-[9px] sm:text-xs shrink-0 ${
               effectiveMoon.phaseName === 'Full Moon' || effectiveMoon.illumination >= 0.92
                 ? 'bg-red-950/40 border-red-500 text-white shadow-[0_0_14px_rgba(255,0,43,0.65)] animate-pulse'
                 : 'bg-white/5 border-white/20 text-white hover:border-white/40 hover:bg-white/10'
             }`}
             title="Open Real-Time Lunar Phase Database Controller"
           >
-            <span className="text-sm leading-none">{effectiveMoon.symbol}</span>
-            <span className="text-white font-bold text-[10px] sm:text-[11px] truncate max-w-[80px] sm:max-w-none">{effectiveMoon.phaseName}</span>
-            <span className="text-zinc-400 font-bold text-[8.5px] hidden md:inline">{(effectiveMoon.illumination * 100).toFixed(0)}%</span>
-            <span className="text-[6.5px] sm:text-[7px] bg-red-600 text-white font-black px-1 py-0.2 uppercase rounded-xs hidden xs:inline">DB</span>
+            <span className="text-xs sm:text-sm leading-none">{effectiveMoon.symbol}</span>
+            <span className="text-white font-bold text-[9px] sm:text-[11px] truncate max-w-[65px] sm:max-w-none">{effectiveMoon.phaseName}</span>
+            <span className="text-zinc-400 font-bold text-[8px] hidden md:inline">{(effectiveMoon.illumination * 100).toFixed(0)}%</span>
+            <span className="text-[6px] sm:text-[7px] bg-red-600 text-white font-black px-1 py-0.2 uppercase rounded-xs hidden xs:inline">DB</span>
           </button>
 
           {/* Sound toggle button */}
           <button 
             id="audio-mute-btn"
             onClick={toggleMute}
-            className="w-7 h-7 sm:w-8 sm:h-8 border border-white/20 flex items-center justify-center rounded-sm hover:border-white transition-colors bg-white/5 shrink-0"
+            className="w-6.5 h-6.5 sm:w-7.5 sm:h-7.5 border border-white/20 flex items-center justify-center rounded-sm hover:border-white transition-colors bg-white/5 shrink-0"
             title="Toggle Audio Feedback"
           >
-            {isMuted ? <VolumeX className="w-3 h-3 text-white/50" /> : <Volume2 className="w-3 h-3 text-white animate-pulse" />}
+            {isMuted ? <VolumeX className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-white/50" /> : <Volume2 className="w-2.5 h-2.5 sm:w-3 sm:h-3 text-white animate-pulse" />}
           </button>
 
           {/* Quick Radio Audio Play/Pause Button with Instant Direct Audio Unlock */}
@@ -9468,19 +9532,25 @@ export default function App() {
             type="button"
             onClick={() => {
               sounds.playSelect();
-              userManuallyPausedRef.current = isRadioPlaying;
-              setIsRadioPlaying(!isRadioPlaying);
+              const nextPlaying = !isRadioPlaying;
+              userManuallyPausedRef.current = !nextPlaying;
+              setIsRadioPlaying(nextPlaying);
               const activeAudio = (activeDeckTagRef.current === 'primary' ? radioAudioRef.current : secondaryAudioRef.current) || radioAudioRef.current;
               if (activeAudio) {
-                if (!isRadioPlaying) {
+                if (nextPlaying) {
+                  if (!activeAudio.src && wawoloTracks.length > 0) {
+                    const curT = wawoloTracks[activePlayIndex] || wawoloTracks[0];
+                    activeAudio.src = curT.url.startsWith('http') ? curT.url : window.location.origin + curT.url;
+                    activeAudio.preload = "auto";
+                  }
                   activeAudio.volume = clampVol(radioVolume);
-                  activeAudio.play().catch(() => {});
+                  activeAudio.play().catch(e => console.warn("[RADIO] Header play unlock:", e));
                 } else {
                   activeAudio.pause();
                 }
               }
             }}
-            className={`h-7 sm:h-8 px-2 sm:px-2.5 border flex items-center gap-1.5 rounded-sm transition-all text-[8.5px] sm:text-[9.5px] font-mono uppercase font-black cursor-pointer shrink-0 ${
+            className={`h-6.5 sm:h-7.5 px-1.5 sm:px-2.5 border flex items-center gap-1 sm:gap-1.5 rounded-sm transition-all text-[8px] sm:text-[9px] font-mono uppercase font-black cursor-pointer shrink-0 ${
               isRadioPlaying
                 ? 'bg-red-600/20 border-red-500/60 text-white shadow-[0_0_12px_rgba(239,68,68,0.3)]'
                 : 'bg-white/5 border-white/20 text-zinc-400 hover:text-white hover:border-white/40'
@@ -10026,7 +10096,7 @@ export default function App() {
                   {/* Friends List Container */}
                   <div className="space-y-1 max-h-[160px] overflow-y-auto border-t border-white/5 pt-2">
                     {(profile?.friends && profile.friends.length > 0) ? (
-                      profile.friends.map((friendAnd, idx) => {
+                      (profile.friends || []).map((friendAnd, idx) => {
                         const matchingSkater = allSkaters.find(s => s.handle.toLowerCase() === friendAnd.toLowerCase());
                         const skaterStyle = matchingSkater?.skateStyle || "Street";
                         const reps = matchingSkater?.reputation || 0;
@@ -10250,7 +10320,12 @@ export default function App() {
                 UNLOCKED NOMAD BADGES & NETWORK RANK
               </label>
               <div className="flex flex-wrap gap-1.5 max-h-[140px] overflow-y-auto pr-1 custom-scrollbar">
-                {profile?.badges.map((badgeStr, badgeIdx) => {
+                {(profile?.badges || []).length === 0 && (
+                  <span className="text-[9px] font-mono text-zinc-500 italic py-1">
+                    [NO BADGES YET UNLOCKED]
+                  </span>
+                )}
+                {(profile?.badges || []).map((badgeStr, badgeIdx) => {
                   const isInfinite = badgeStr === 'god_level' || badgeStr === 'infinite_outlaw' || badgeStr.includes('infinite');
                   const isLeaderTier = isInfinite || badgeStr === 'network_captain' || badgeStr === 'platform_leader' || badgeStr === 'verified_commander';
                   
@@ -10497,7 +10572,7 @@ export default function App() {
                                     fill="none"
                                   />
                                 )}
-                                {layout.streets.map((streetPath, sidx) => (
+                                {(layout.streets || []).map((streetPath, sidx) => (
                                   <path 
                                     key={`st-${sidx}`}
                                     d={streetPath}
@@ -10856,7 +10931,7 @@ export default function App() {
                                         strokeWidth="1" 
                                         rx="2"
                                       />
-                                      {cluster.skaters.map((sk, sidx) => (
+                                      {(cluster.skaters || []).map((sk, sidx) => (
                                         <g 
                                           key={sk.id} 
                                           transform={`translate(0, ${sidx * 10 + 5})`}
@@ -13109,7 +13184,7 @@ export default function App() {
                         {feedItem.comments && feedItem.comments.length > 0 && (
                           <div className="space-y-1.5 max-h-[140px] overflow-y-auto pr-1">
                             <div className="text-[8px] font-mono text-zinc-500 uppercase tracking-widest">TRANSERMISSIONS COMMENTS //</div>
-                            {feedItem.comments.map((comment) => (
+                            {(feedItem.comments || []).map((comment) => (
                               <div key={comment.id} className="text-[10px] bg-black/60 border border-white/5 p-1.5 rounded-xs leading-normal">
                                 <div className="flex items-center justify-between text-zinc-500 text-[8.5px] font-mono">
                                   <span className="text-red-400 font-black uppercase italic">@{comment.userName}</span>
@@ -13291,7 +13366,7 @@ export default function App() {
                         {feedItem.comments && feedItem.comments.length > 0 && (
                           <div className="space-y-1.5 max-h-[140px] overflow-y-auto pr-1">
                             <div className="text-[8px] font-mono text-zinc-500 uppercase tracking-widest">TRANSERMISSIONS COMMENTS //</div>
-                            {feedItem.comments.map((comment) => (
+                            {(feedItem.comments || []).map((comment) => (
                               <div key={comment.id} className="text-[10px] bg-black/60 border border-white/5 p-1.5 rounded-xs leading-normal">
                                 <div className="flex items-center justify-between text-zinc-500 text-[8.5px] font-mono">
                                   <span className="text-red-400 font-black uppercase italic">@{comment.userName}</span>
@@ -13595,7 +13670,7 @@ export default function App() {
                         <div className="space-y-1 bg-zinc-950 p-2.5 border border-white/5 text-left">
                           <span className="text-[7px] font-mono text-zinc-500 tracking-wider">TELEMETRY SEQUENCE MAP:</span>
                           <div className="space-y-1 mt-1 text-[9px] font-mono">
-                            {activeTrick.steps.map((st, sidx) => (
+                            {(activeTrick.steps || []).map((st, sidx) => (
                               <div key={sidx} className={`p-1 flex items-start gap-1 p-1 rounded-xs transition-colors ${
                                 practiceStepIndex === sidx && practiceRunning
                                   ? 'bg-red-500/10 text-white border-l border-l-red-500'
@@ -14380,7 +14455,7 @@ export default function App() {
               <div className="space-y-1 select-none">
                 <span className="text-[8px] text-zinc-500 uppercase tracking-widest">VOID BADGES AWARDED</span>
                 <div className="flex flex-wrap gap-1">
-                  {selectedLiveSkater.badges.map((badge, bIdx) => (
+                  {(selectedLiveSkater.badges || []).map((badge, bIdx) => (
                     <span 
                       key={bIdx}
                       className="text-[7.5px] font-bold text-white bg-white/10 px-1.5 py-0.5 border border-white/10 hover:border-white/30 transition-all uppercase"
@@ -14545,16 +14620,20 @@ export default function App() {
                   onClick={() => {
                     sounds.playSelect();
                     const activeAudio = (activeDeckTagRef.current === 'primary' ? radioAudioRef.current : secondaryAudioRef.current) || radioAudioRef.current;
-                    if (isRadioPlaying) {
-                      userManuallyPausedRef.current = true;
-                      setIsRadioPlaying(false);
-                      if (activeAudio) activeAudio.pause();
-                    } else {
-                      userManuallyPausedRef.current = false;
-                      setIsRadioPlaying(true);
-                      if (activeAudio) {
+                    const nextPlaying = !isRadioPlaying;
+                    userManuallyPausedRef.current = !nextPlaying;
+                    setIsRadioPlaying(nextPlaying);
+                    if (activeAudio) {
+                      if (nextPlaying) {
+                        if (!activeAudio.src && wawoloTracks.length > 0) {
+                          const curTrack = wawoloTracks[activePlayIndex] || wawoloTracks[0];
+                          activeAudio.src = curTrack.url.startsWith('http') ? curTrack.url : window.location.origin + curTrack.url;
+                          activeAudio.preload = "auto";
+                        }
                         activeAudio.volume = clampVol(radioVolume);
-                        activeAudio.play().catch(() => {});
+                        activeAudio.play().catch(e => console.warn("[RADIO] Minimized play unlock:", e));
+                      } else {
+                        activeAudio.pause();
                       }
                     }
                   }}
@@ -14850,16 +14929,20 @@ export default function App() {
                       onClick={() => {
                         sounds.playSelect();
                         const activeAudio = (activeDeckTagRef.current === 'primary' ? radioAudioRef.current : secondaryAudioRef.current) || radioAudioRef.current;
-                        if (isRadioPlaying) {
-                          userManuallyPausedRef.current = true;
-                          setIsRadioPlaying(false);
-                          if (activeAudio) activeAudio.pause();
-                        } else {
-                          userManuallyPausedRef.current = false;
-                          setIsRadioPlaying(true);
-                          if (activeAudio) {
+                        const nextPlaying = !isRadioPlaying;
+                        userManuallyPausedRef.current = !nextPlaying;
+                        setIsRadioPlaying(nextPlaying);
+                        if (activeAudio) {
+                          if (nextPlaying) {
+                            if (!activeAudio.src && wawoloTracks.length > 0) {
+                              const curTrack = wawoloTracks[activePlayIndex] || wawoloTracks[0];
+                              activeAudio.src = curTrack.url.startsWith('http') ? curTrack.url : window.location.origin + curTrack.url;
+                              activeAudio.preload = "auto";
+                            }
                             activeAudio.volume = clampVol(radioVolume);
-                            activeAudio.play().catch(() => {});
+                            activeAudio.play().catch(e => console.warn("[RADIO] Deck play unlock:", e));
+                          } else {
+                            activeAudio.pause();
                           }
                         }
                       }}
