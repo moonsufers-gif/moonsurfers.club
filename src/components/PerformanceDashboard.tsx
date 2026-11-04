@@ -421,7 +421,7 @@ export const PerformanceDashboard: React.FC<PerformanceDashboardProps> = ({
               {/* Individual Tricks Lists */}
               <div className="max-h-[140px] overflow-y-auto space-y-1.5 pr-1">
                 {selectedDayData.count > 0 ? (
-                  (selectedDayData.tricks || []).map((trick) => (
+                  selectedDayData.tricks.map((trick) => (
                     <div
                       key={trick.id}
                       className="bg-black/60 border border-white/5 p-2.5 hover:border-white/15 transition-all space-y-1.5"

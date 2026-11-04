@@ -10,27 +10,10 @@ export const SUPABASE_ANON_KEY =
   (typeof process !== 'undefined' && process.env?.VITE_SUPABASE_ANON_KEY) || 
   'sb_publishable_bKGd54je4uPFzpEoyv1a6A_ANmAsZZz';
 
-// Resilient fetch wrapper that catches network/CORS blocks in restricted preview iframes
-const safeSupabaseFetch: typeof fetch = async (input, init) => {
-  try {
-    return await fetch(input, init);
-  } catch (err) {
-    // Return a dummy 503 response instead of allowing unhandled rejection in the browser
-    return new Response(JSON.stringify({ message: "Supabase connection offline or unreachable in preview sandbox", error: "network_unavailable" }), {
-      status: 503,
-      statusText: "Service Unavailable",
-      headers: { "Content-Type": "application/json" }
-    });
-  }
-};
-
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
-  },
-  global: {
-    fetch: safeSupabaseFetch,
   },
   realtime: {
     params: {
